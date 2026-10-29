@@ -12,10 +12,17 @@ var dangerousPatterns = []*regexp.Regexp{
 	// Recursive root / home wipes.
 	regexp.MustCompile(`\brm\b[^\n]*\s-[a-zA-Z]*r[a-zA-Z]*f?[^\n]*\s+(/|/\*|~|~/\*|\$HOME)(\s|$)`),
 	regexp.MustCompile(`\brm\b[^\n]*\s-[a-zA-Z]*f[a-zA-Z]*r?[^\n]*\s+(/|/\*|~)(\s|$)`),
-	// Filesystem creation / raw disk writes.
+	// Filesystem creation / raw disk writes (xvd: Xen/AWS EC2 disks).
 	regexp.MustCompile(`\bmkfs\b`),
-	regexp.MustCompile(`\bdd\b[^\n]*\bof=/dev/(sd|nvme|vd|hd|mmcblk|disk)`),
-	regexp.MustCompile(`>\s*/dev/(sd|nvme|vd|hd|mmcblk)`),
+	regexp.MustCompile(`\bdd\b[^\n]*\bof=/dev/(sd|nvme|vd|xvd|hd|mmcblk|disk)`),
+	regexp.MustCompile(`>\s*/dev/(sd|nvme|vd|xvd|hd|mmcblk)`),
+	// Windows disk and boot destruction.
+	regexp.MustCompile(`(?i)\b(Format-Volume|Clear-Disk|Initialize-Disk|Remove-Partition)\b`),
+	regexp.MustCompile(`(?i)\bdiskpart\b`),
+	regexp.MustCompile(`(?i)\bformat(\.com)?\s+[a-z]:`),
+	regexp.MustCompile(`(?i)\bbcdedit\b[^\n]*\s/delete\b`),
+	regexp.MustCompile(`(?i)\bvssadmin\b[^\n]*\bdelete\s+shadows\b`),
+	regexp.MustCompile(`(?i)\bcipher\b[^\n]*\s/w:`),
 	// Whole-disk / partition wipes.
 	regexp.MustCompile(`\bwipefs\b`),
 	regexp.MustCompile(`\bshred\b[^\n]*\s/dev/`),
@@ -39,7 +46,24 @@ var powerPatterns = []*regexp.Regexp{
 	regexp.MustCompile(cmdStart + `(?:/usr)?(?:/s?bin/)?init\s+[06]\b`),
 	regexp.MustCompile(cmdStart + `(?:/usr)?(?:/s?bin/)?telinit\s+[06]\b`),
 	regexp.MustCompile(`\bsystemctl\s+(?:-\S+\s+)*(poweroff|reboot|halt|kexec)\b`),
+	regexp.MustCompile(`(?i)\b(Stop-Computer|Restart-Computer)\b`),
+	regexp.MustCompile(`(?i)` + cmdStart + `shutdown(\.exe)?\s+/[srpgh]\b`),
 }
+
+// Windows recursive deletion of a drive root or the Windows directory needs
+// three independent conditions, which RE2 cannot express in one pattern.
+var (
+	winDeleteVerb  = regexp.MustCompile(`(?i)(^|[\s;&|(])(Remove-Item|ri|rm|del|erase|rd|rmdir)\s`)
+	winRecursive   = regexp.MustCompile(`(?i)(\s-r(ecurse)?\b|\s/s\b)`)
+	winRootTargets = regexp.MustCompile(`(?i)(^|\s)["']?([a-z]:\\?|[a-z]:\\windows\\?|\$env:(systemroot|systemdrive|windir)\\?)["']?(\s|$|;)`)
+)
+
+func windowsRootWipe(c string) bool {
+	return winDeleteVerb.MatchString(c) && winRecursive.MatchString(c) && winRootTargets.MatchString(c)
+}
+
+// unquote removes quote characters so `rm -rf "/"` is checked like `rm -rf /`.
+func unquote(s string) string { return strings.NewReplacer(`"`, "", `'`, "").Replace(s) }
 
 // quotedRe matches single- or double-quoted shell strings.
 var quotedRe = regexp.MustCompile(`'[^']*'|"(?:[^"\\]|\\.)*"`)
@@ -52,9 +76,14 @@ func stripQuoted(s string) string {
 // CheckCommand returns a non-empty reason when command is blocked.
 func CheckCommand(command string) (blocked bool, reason string) {
 	c := strings.TrimSpace(command)
-	for _, re := range dangerousPatterns {
-		if re.MatchString(c) {
-			return true, "command matches a destructive-operation safety rule and was blocked: " + re.String()
+	for _, candidate := range []string{c, unquote(c)} {
+		for _, re := range dangerousPatterns {
+			if re.MatchString(candidate) {
+				return true, "command matches a destructive-operation safety rule and was blocked: " + re.String()
+			}
+		}
+		if windowsRootWipe(candidate) {
+			return true, "recursive deletion of a drive root or the Windows directory is not allowed"
 		}
 	}
 	unquoted := stripQuoted(c)

@@ -25,6 +25,24 @@ func TestCheckCommandBlocks(t *testing.T) {
 		"init 0",
 		"chmod -R 777 /",
 		"chown -R nobody /",
+		// Quoted root and Xen/AWS disks.
+		`rm -rf "/"`,
+		`sudo rm -rf '/*'`,
+		"dd if=/dev/zero of=/dev/xvda bs=1M",
+		// Windows.
+		"Format-Volume -DriveLetter D",
+		"Get-Disk 1 | Clear-Disk -RemoveData",
+		"diskpart /s wipe.txt",
+		"format C: /q",
+		"Remove-Item -Recurse -Force C:\\",
+		`Remove-Item C:\Windows -Recurse -Force`,
+		"rd /s /q C:\\",
+		"Remove-Item -Recurse $env:SystemRoot",
+		"Stop-Computer -Force",
+		"Restart-Computer",
+		"shutdown /r /t 0",
+		"bcdedit /delete {current}",
+		"vssadmin delete shadows /all /quiet",
 	}
 	for _, c := range blocked {
 		if ok, _ := CheckCommand(c); !ok {
@@ -54,6 +72,14 @@ func TestCheckCommandAllows(t *testing.T) {
 		"echo 'do not reboot'",
 		"cat /var/log/shutdown.log",
 		"systemctl status reboot.target",
+		// Windows commands that must keep working.
+		`Remove-Item -Recurse -Force .\build`,
+		`Remove-Item -Recurse -Force C:\temp\cache`,
+		`rd /s /q C:\Users\me\AppData\Local\Temp\x`,
+		"Get-Disk | Format-Table",
+		"Get-Volume",
+		"Get-Help Restart-Service",
+		`rm -rf "./dist"`,
 	}
 	for _, c := range allowed {
 		if ok, reason := CheckCommand(c); ok {

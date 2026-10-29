@@ -24,8 +24,8 @@ func TestInterruptedStreamIsClassified(t *testing.T) {
 
 func TestDeterministicBadStreamsAreNotInterruptions(t *testing.T) {
 	for name, body := range map[string]string{
-		"length":   sse(`{"choices":[{"delta":{"content":"x"},"finish_reason":"length"}]}`),
-		"bad_json": "data: {broken}\n\ndata: [DONE]\n\n",
+		"length":              sse(`{"choices":[{"delta":{"content":"x"},"finish_reason":"length"}]}`),
+		"bad_json":            "data: {broken}\n\ndata: [DONE]\n\n",
 		"no_reason_with_done": sse(`{"choices":[{"delta":{"content":"x"}}]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
