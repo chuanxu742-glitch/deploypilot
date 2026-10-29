@@ -1,0 +1,1 @@
+{"root":["./src/agent.tsx","./src/app.tsx","./src/icon.tsx","./src/modelpicker.tsx","./src/settings.tsx","./src/terminal.tsx","./src/agent-state.ts","./src/api.ts","./src/main.tsx","./src/terminal-agent.ts","./src/ui-preferences.ts","./src/vite-env.d.ts"],"version":"5.6.3"}

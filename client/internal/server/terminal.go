@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deploypilot/deploypilot/internal/pty"
 	"github.com/gorilla/websocket"
 )
 
@@ -41,74 +40,80 @@ func sameOrigin(r *http.Request) bool {
 	return strings.EqualFold(u.Host, r.Host)
 }
 
-// handleTerminal upgrades to a WebSocket and bridges it to a PTY-backed shell.
+// A viewer subscribes to the application-owned shell and replays its bounded history.
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	up := newUpgrader()
 	conn, err := up.Upgrade(w, r, nil)
 	if err != nil {
-		return // Upgrade already wrote an error response.
+		return
 	}
 	defer conn.Close()
 	defer s.track(r, conn)()
+	conn.SetReadLimit(64 * 1024)
+	touch, stopSession := s.guardSession(r, conn)
+	defer stopSession()
 	stopPing := make(chan struct{})
 	defer close(stopPing)
 	keepAlive(conn, stopPing)
-
-	sess, err := pty.Start(pty.Config{Rows: 24, Cols: 80})
+	sess, err := s.sharedTerminal()
 	if err != nil {
-		_ = conn.WriteControl(
-			websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "terminal unavailable: "+err.Error()),
-			time.Now().Add(time.Second),
-		)
+		conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1011, "terminal unavailable"), time.Now().Add(time.Second))
 		return
 	}
-	defer sess.Close()
-
+	history, output, unsubscribeOutput := sess.Subscribe()
+	defer unsubscribeOutput()
+	updates, unsubscribe := s.subscribeTerminalAgent()
+	defer unsubscribe()
+	write := func(kind int, data []byte) error {
+		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return conn.WriteMessage(kind, data)
+	}
+	if err := write(websocket.TextMessage, []byte(`{"type":"terminal_reset"}`)); err != nil {
+		return
+	}
+	for _, chunk := range history {
+		if err := write(websocket.BinaryMessage, chunk); err != nil {
+			return
+		}
+	}
 	done := make(chan struct{})
-
-	// PTY -> WebSocket.
+	writerDone := make(chan struct{})
 	go func() {
-		defer close(done)
-		buf := make([]byte, 16*1024)
+		defer close(writerDone)
+		defer conn.Close()
 		for {
-			n, readErr := sess.Read(buf)
-			if n > 0 {
-				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+			select {
+			case <-done:
+				return
+			case <-sess.dead:
+				return
+			case data, ok := <-output:
+				if !ok || !touch() || write(websocket.BinaryMessage, data) != nil {
+					return
+				}
+			case data, ok := <-updates:
+				if !ok || !touch() || write(websocket.TextMessage, data) != nil {
 					return
 				}
 			}
-			if readErr != nil {
-				_ = conn.WriteControl(
-					websocket.CloseMessage,
-					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "shell exited"),
-					time.Now().Add(time.Second),
-				)
-				return
-			}
 		}
 	}()
-
-	// WebSocket -> PTY.
+	defer func() { close(done); conn.Close(); <-writerDone }()
 	for {
-		mt, data, readErr := conn.ReadMessage()
-		if readErr != nil {
-			break
+		kind, data, err := conn.ReadMessage()
+		if err != nil || !touch() {
+			return
 		}
-		switch mt {
+		switch kind {
 		case websocket.BinaryMessage:
-			if _, werr := sess.Write(data); werr != nil {
-				goto cleanup
+			if _, err := s.writeTerminalInput(sess, data); err != nil {
+				return
 			}
 		case websocket.TextMessage:
 			var msg controlMsg
-			if json.Unmarshal(data, &msg) == nil && msg.Type == "resize" {
+			if json.Unmarshal(data, &msg) == nil && msg.Type == "resize" && msg.Rows > 0 && msg.Cols > 0 {
 				_ = sess.Resize(msg.Rows, msg.Cols)
 			}
 		}
 	}
-
-cleanup:
-	sess.Close()
-	<-done
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,7 @@ const DefaultModel = "bailu-auto"
 
 // Client talks to an OpenAI-compatible chat API.
 type Client struct {
+	mu      sync.RWMutex
 	baseURL string
 	apiKey  string
 	model   string
@@ -72,19 +74,44 @@ func FromEnv() *Client {
 
 // SetAPIKey updates the in-memory API key (set by the operator at runtime).
 // Surrounding whitespace (e.g. a pasted trailing newline) is removed.
-func (c *Client) SetAPIKey(k string) { c.apiKey = strings.TrimSpace(k) }
+func (c *Client) SetAPIKey(k string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.apiKey = strings.TrimSpace(k)
+}
 
 // SetModel updates the model name.
-func (c *Client) SetModel(m string) { c.model = strings.TrimSpace(m) }
+func (c *Client) SetModel(m string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.model = strings.TrimSpace(m)
+}
 
 // Model returns the configured model.
-func (c *Client) Model() string { return c.model }
+func (c *Client) Model() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.model
+}
 
 // HasKey reports whether an API key is configured.
-func (c *Client) HasKey() bool { return c.apiKey != "" }
+func (c *Client) HasKey() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.apiKey != ""
+}
+
+// Snapshot keeps a running task on one configuration while settings may change.
+func (c *Client) Snapshot() *Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return &Client{baseURL: c.baseURL, apiKey: c.apiKey, model: c.model, http: c.http}
+}
 
 // Redact removes the API key from a string so it is never leaked in logs.
 func (c *Client) Redact(s string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.apiKey == "" {
 		return s
 	}
@@ -93,6 +120,7 @@ func (c *Client) Redact(s string) string {
 
 // ListModels returns available model IDs from GET /models.
 func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	c = c.Snapshot()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 	if err != nil {
 		return nil, err
@@ -121,6 +149,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 // incremental content chunk (may be nil). The fully assembled assistant
 // message and finish reason are returned.
 func (c *Client) StreamChat(ctx context.Context, req ChatRequest, onDelta func(string)) (*ChatResult, error) {
+	c = c.Snapshot()
 	if c.apiKey == "" {
 		return nil, errors.New("no API key configured")
 	}
@@ -144,7 +173,15 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, onDelta func(s
 	return result, err
 }
 
-func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(string)) (*ChatResult, error) {
+func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(string)) (result *ChatResult, err error) {
+	// Once a stream has begun, retrying would replay already displayed text.
+	// Tools only run after the entire response has passed validation.
+	started := false
+	defer func() {
+		if err != nil && started {
+			err = &streamError{err: err}
+		}
+	}()
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -167,20 +204,29 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	}
 
 	asm := newAssembler()
+	totalBytes := 0
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
+		totalBytes += len(sc.Bytes())
+		if totalBytes > 2*1024*1024 {
+			return nil, &streamError{err: errors.New("model response exceeds 2 MiB limit")}
+		}
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		started = true
 		if data == "[DONE]" {
 			break
 		}
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue // tolerate keep-alives / malformed partials
+			return nil, fmt.Errorf("invalid model stream event: %w", err)
+		}
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			return nil, fmt.Errorf("model stream error: %s", c.Redact(string(chunk.Error)))
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -189,7 +235,9 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 		if ch.Delta.Content != "" && onDelta != nil {
 			onDelta(ch.Delta.Content)
 		}
-		asm.add(ch.Delta)
+		if err := asm.add(ch.Delta); err != nil {
+			return nil, err
+		}
 		if ch.FinishReason != "" {
 			asm.finishReason = ch.FinishReason
 		}
@@ -197,8 +245,19 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	return asm.result(), nil
+	result = asm.result()
+	if err := validateResult(result); err != nil {
+		return nil, &streamError{err: err}
+	}
+	return result, nil
 }
+
+// streamError is not retried: malformed/truncated output is not a completed
+// assistant turn, and its partial content may already have reached the UI.
+type streamError struct{ err error }
+
+func (e *streamError) Error() string { return e.err.Error() }
+func (e *streamError) Unwrap() error { return e.err }
 
 func (c *Client) auth(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
@@ -223,6 +282,10 @@ func (e *apiError) Error() string {
 
 // retryable reports whether an error warrants a retry.
 func retryable(err error) bool {
+	var se *streamError
+	if errors.As(err, &se) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	var ae *apiError
 	if errors.As(err, &ae) {
 		return ae.status == http.StatusTooManyRequests || ae.status >= 500

@@ -20,7 +20,7 @@ const Logo = `
 `
 
 // Tagline is shown under the logo.
-const Tagline = "Remote deploy assistant · 一行命令，扫码即接入"
+const Tagline = "远程部署助手"
 
 // Options controls how the banner is rendered.
 type Options struct {

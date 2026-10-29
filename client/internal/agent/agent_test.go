@@ -232,7 +232,7 @@ func TestAgentReadWriteFile(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		toolCallSSE("c1", "write_file", `{"path":"/tmp/x.conf","content":"hello"}`),
 		toolCallSSE("c2", "read_file", `{"path":"/tmp/x.conf"}`),
-		textSSE("all set"),
+		toolCallSSE("c3", "finish", `{"summary":"all set","success":true}`),
 	})
 	defer srv.Close()
 
@@ -254,8 +254,7 @@ func TestAgentReadWriteFile(t *testing.T) {
 	}
 }
 
-// An empty model reply must not end the task with a blank "完成" card; the
-// agent asks once for a summary.
+// An empty reply must not end as successful completion; ask once for finish.
 func TestAgentNudgesOnEmptyReply(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		textSSE(""),
@@ -280,7 +279,7 @@ func TestAgentNudgesOnEmptyReply(t *testing.T) {
 	}
 }
 
-// Two empty replies in a row still end with a readable message.
+// Two empty replies in a row end with a readable, unsuccessful final message.
 func TestAgentEmptyReplyFallback(t *testing.T) {
 	srv := scriptedLLM(t, []string{textSSE(""), textSSE("")})
 	defer srv.Close()

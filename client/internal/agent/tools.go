@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"runtime"
 
 	"github.com/deploypilot/deploypilot/internal/llm"
 )
@@ -20,17 +21,21 @@ func raw(s string) json.RawMessage { return json.RawMessage(s) }
 
 // toolSet returns the tool declarations advertised to the model.
 func toolSet() []llm.Tool {
+	shell := "bash on Linux"
+	if runtime.GOOS == "windows" {
+		shell = "Windows PowerShell (powershell.exe); use PowerShell syntax, not bash"
+	}
 	return []llm.Tool{
 		{
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolRunCommand,
-				Description: "Run a shell command on the target Linux machine via bash. Returns exit code and combined stdout/stderr. Prefer non-interactive commands; long operations are allowed.",
+				Description: "Run a shell command using " + shell + ". Returns exit code and combined stdout/stderr. Prefer non-interactive commands; commands run sequentially.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
 						"command":{"type":"string","description":"The shell command to execute."},
-						"timeout_seconds":{"type":"integer","description":"Max seconds before the command is killed. Default 600."}
+						"timeout_seconds":{"type":"integer","minimum":0,"maximum":3600,"description":"Max seconds before the command is killed. 0 or omitted means 600."}
 					},
 					"required":["command"]
 				}`),
@@ -110,7 +115,7 @@ func toolSet() []llm.Tool {
 						"summary":{"type":"string","description":"What was accomplished, how to use/verify the result, and any follow-ups."},
 						"success":{"type":"boolean"}
 					},
-					"required":["summary"]
+					"required":["summary","success"]
 				}`),
 			},
 		},

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/deploypilot/deploypilot/internal/agent"
 	"github.com/deploypilot/deploypilot/internal/auth"
 	"github.com/deploypilot/deploypilot/internal/llm"
 )
@@ -31,9 +32,50 @@ type Server struct {
 
 	// baseCtx is the parent of every request context. Shutdown cancels it so
 	// long-lived WebSocket handlers (terminal, agent) stop immediately.
-	baseCtx    context.Context
-	cancelBase context.CancelFunc
-	active     sync.WaitGroup
+	baseCtx     context.Context
+	cancelBase  context.CancelFunc
+	active      sync.WaitGroup
+	newExecutor func() agent.Executor
+	// A task owns this slot through cancellation and cleanup, across connections.
+	agentMu             sync.Mutex
+	agentBusy           bool
+	terminalAgentState  string
+	terminalSubscribers map[chan []byte]struct{}
+	agentContextBytes   int
+	shellMu             sync.Mutex
+	shell               *sharedShell
+	historyDir          string
+	legacyAuditDir      string
+	historyErr          error
+	historyLock         io.Closer
+	historyTimer        *time.Timer
+	shutdownOnce        sync.Once
+	shutdownDone        chan struct{}
+	taskMu              sync.Mutex
+	tasks               []*taskRecord
+	taskCancel          context.CancelFunc
+	taskWG              sync.WaitGroup
+	taskSubscribers     map[chan []byte]struct{}
+}
+
+func (s *Server) acquireAgent() bool {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	if s.agentBusy {
+		return false
+	}
+	s.agentBusy = true
+	s.terminalAgentState = "running"
+	s.broadcastTerminalLocked(map[string]string{"type": "agent_state", "state": "running"})
+	return true
+}
+
+func (s *Server) releaseAgent() {
+	s.agentMu.Lock()
+	s.agentBusy = false
+	s.terminalAgentState = "idle"
+	s.broadcastTerminalLocked(map[string]string{"type": "agent_state", "state": "idle"})
+	s.agentMu.Unlock()
 }
 
 // Options configures the server.
@@ -47,18 +89,29 @@ type Options struct {
 	Auth *auth.Manager
 	// LLM is the model client. May be nil in tests.
 	LLM *llm.Client
+	// AgentContextBytes bounds each model request; zero uses the agent default.
+	AgentContextBytes int
+	HistoryDir        string
+	LegacyAuditDir    string
 }
 
 // New creates a server. It does not start listening until Start is called.
 func New(opts Options) *Server {
 	s := &Server{
-		version: opts.Version,
-		assets:  opts.Assets,
-		auth:    opts.Auth,
-		llm:     opts.LLM,
-		mux:     http.NewServeMux(),
+		version:           opts.Version,
+		assets:            opts.Assets,
+		auth:              opts.Auth,
+		llm:               opts.LLM,
+		mux:               http.NewServeMux(),
+		historyDir:        opts.HistoryDir,
+		legacyAuditDir:    opts.LegacyAuditDir,
+		taskSubscribers:   make(map[chan []byte]struct{}),
+		agentContextBytes: opts.AgentContextBytes,
 	}
+	s.shutdownDone = make(chan struct{})
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
+	s.newExecutor = func() agent.Executor { return &sessionExecutor{server: s, files: agent.NewShellExecutor()} }
+	s.loadTasks()
 	s.routes()
 	return s
 }
@@ -70,13 +123,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/health", s.handleHealth)
 	if s.auth != nil {
 		s.mux.HandleFunc("/api/pair", s.handlePair)
-		// Example protected endpoint; feature routes attach here in later tasks.
+		// Host details and controls share the paired session boundary.
 		s.mux.Handle("/api/session", s.auth.Middleware(http.HandlerFunc(s.handleSession)))
+		s.mux.Handle("/api/machine", s.auth.Middleware(http.HandlerFunc(s.handleMachine)))
 		s.mux.Handle("/ws/term", s.auth.Middleware(http.HandlerFunc(s.handleTerminal)))
 		if s.llm != nil {
 			s.mux.Handle("/api/llm/status", s.auth.Middleware(http.HandlerFunc(s.handleLLMStatus)))
 			s.mux.Handle("/api/llm/config", s.auth.Middleware(http.HandlerFunc(s.handleLLMConfig)))
 			s.mux.Handle("/api/llm/models", s.auth.Middleware(http.HandlerFunc(s.handleLLMModels)))
+			s.mux.Handle("/api/tasks", s.auth.Middleware(http.HandlerFunc(s.handleTasks)))
+			s.mux.Handle("/api/tasks/", s.auth.Middleware(http.HandlerFunc(s.handleTasks)))
 			s.mux.Handle("/ws/agent", s.auth.Middleware(http.HandlerFunc(s.handleAgent)))
 		}
 	}
@@ -118,6 +174,9 @@ func (s *Server) handleSession(w http.ResponseWriter, _ *http.Request) {
 // Start binds a listener on 127.0.0.1 using an OS-assigned port and begins
 // serving in a background goroutine. The chosen address is returned.
 func (s *Server) Start() (string, error) {
+	if s.historyErr != nil {
+		return "", s.historyErr
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", err
@@ -148,14 +207,35 @@ func (s *Server) Addr() string {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.cancelBase()
 
-	done := make(chan struct{})
-	go func() {
-		s.active.Wait()
-		close(done)
-	}()
+	s.shutdownOnce.Do(func() {
+		go func() {
+			s.active.Wait()
+			s.taskWG.Wait()
+			s.taskMu.Lock()
+			if s.historyTimer != nil {
+				s.historyTimer.Stop()
+				s.historyTimer = nil
+			}
+			s.persistTasksLocked()
+			s.taskMu.Unlock()
+			s.shellMu.Lock()
+			if s.shell != nil {
+				_ = s.shell.Close()
+			}
+			s.shellMu.Unlock()
+			s.taskMu.Lock()
+			if s.historyLock != nil {
+				_ = s.historyLock.Close()
+				s.historyLock = nil
+			}
+			s.taskMu.Unlock()
+			close(s.shutdownDone)
+		}()
+	})
 	select {
-	case <-done:
+	case <-s.shutdownDone:
 	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	if s.httpSrv == nil {
@@ -170,8 +250,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) track(r *http.Request, closer io.Closer) func() {
 	s.active.Add(1)
 	stop := context.AfterFunc(r.Context(), func() { _ = closer.Close() })
+	stopServer := context.AfterFunc(s.baseCtx, func() { _ = closer.Close() })
 	return func() {
 		stop()
+		stopServer()
 		s.active.Done()
 	}
 }

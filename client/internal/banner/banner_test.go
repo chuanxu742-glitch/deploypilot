@@ -10,6 +10,9 @@ func TestRenderPlain(t *testing.T) {
 	var buf bytes.Buffer
 	Render(&buf, Options{Color: false, Animate: false, Version: "1.2.3"})
 	out := buf.String()
+	if strings.Contains(out, "·") {
+		t.Fatal("startup copy must not contain middle-dot separators")
+	}
 
 	if strings.Contains(out, "\x1b[") {
 		t.Fatalf("plain output must not contain ANSI escape codes, got: %q", out)

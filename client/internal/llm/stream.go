@@ -1,7 +1,14 @@
 package llm
 
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
 // streamChunk is one SSE "data:" event from /chat/completions with stream=true.
 type streamChunk struct {
+	Error   json.RawMessage `json:"error"`
 	Choices []struct {
 		Delta        deltaMsg `json:"delta"`
 		FinishReason string   `json:"finish_reason"`
@@ -39,11 +46,14 @@ func newAssembler() *assembler {
 	return &assembler{toolCalls: make(map[int]*ToolCall)}
 }
 
-func (a *assembler) add(d deltaMsg) {
+func (a *assembler) add(d deltaMsg) error {
 	if d.Content != "" {
 		a.content = append(a.content, d.Content...)
 	}
 	for _, tc := range d.ToolCalls {
+		if tc.Index < 0 || tc.Index >= 32 {
+			return fmt.Errorf("tool call index outside 0..31: %d", tc.Index)
+		}
 		existing, ok := a.toolCalls[tc.Index]
 		if !ok {
 			existing = &ToolCall{Type: "function"}
@@ -63,6 +73,7 @@ func (a *assembler) add(d deltaMsg) {
 			existing.Function.Arguments += tc.Function.Arguments
 		}
 	}
+	return nil
 }
 
 func (a *assembler) result() *ChatResult {
@@ -70,13 +81,25 @@ func (a *assembler) result() *ChatResult {
 	for _, idx := range a.order {
 		msg.ToolCalls = append(msg.ToolCalls, *a.toolCalls[idx])
 	}
-	fr := a.finishReason
-	if fr == "" {
-		if len(msg.ToolCalls) > 0 {
-			fr = "tool_calls"
-		} else {
-			fr = "stop"
+	return &ChatResult{Message: msg, FinishReason: a.finishReason}
+}
+
+func validateResult(r *ChatResult) error {
+	if r.FinishReason != "stop" && r.FinishReason != "tool_calls" {
+		return fmt.Errorf("model response incomplete (finish_reason=%q); no tools executed", r.FinishReason)
+	}
+	if (r.FinishReason == "tool_calls") != (len(r.Message.ToolCalls) > 0) {
+		return fmt.Errorf("model finish reason does not match tool calls")
+	}
+	seen := make(map[string]bool)
+	for _, tc := range r.Message.ToolCalls {
+		if tc.ID == "" || seen[tc.ID] || tc.Type != "function" || strings.TrimSpace(tc.Function.Name) == "" {
+			return fmt.Errorf("model returned missing, duplicate or invalid tool identity")
+		}
+		seen[tc.ID] = true
+		if !json.Valid([]byte(tc.Function.Arguments)) {
+			return fmt.Errorf("model returned incomplete JSON arguments for %s", tc.Function.Name)
 		}
 	}
-	return &ChatResult{Message: msg, FinishReason: fr}
+	return nil
 }

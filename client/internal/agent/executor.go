@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // shellCommand returns the shell invocation for the current OS.
@@ -63,7 +65,7 @@ type Executor interface {
 	MachineInfo(ctx context.Context) string
 }
 
-// shellExecutor is the real executor using bash on the host.
+// shellExecutor uses the platform shell selected by shellCommand.
 type shellExecutor struct{}
 
 // NewShellExecutor returns the default host executor.
@@ -79,7 +81,6 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 	name, args := shellCommand(command)
 	cmd := exec.CommandContext(runCtx, name, args...)
 	cmd.Env = os.Environ()
-	configureCmd(cmd)
 
 	var buf cappedBuffer
 	buf.limit = maxCapturedOutput
@@ -87,7 +88,13 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 	cmd.Stdout = w
 	cmd.Stderr = w
 
-	err := cmd.Run()
+	err := runCommand(cmd)
+	// A successful launcher may leave its output pipe inherited by a service.
+	// WaitDelay closes that pipe; it does not turn exit status 0 into a failure.
+	detached := errors.Is(err, exec.ErrWaitDelay) && runCtx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success()
+	if detached {
+		err = nil
+	}
 	exit := 0
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -103,7 +110,11 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 	if ctx.Err() != nil {
 		return -1, buf.String(), fmt.Errorf("command cancelled: %w", ctx.Err())
 	}
-	return exit, buf.String(), err
+	output := buf.String()
+	if detached {
+		output += "\n[command exited successfully; background output detached; inspect service logs for subsequent output]"
+	}
+	return exit, output, err
 }
 
 func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, error) {
@@ -240,34 +251,72 @@ func parentDir(path string) string {
 	return path[:i]
 }
 
-// cappedBuffer stores up to limit bytes, discarding the rest.
+// cappedBuffer keeps a fixed prefix and a rolling suffix. Install failures
+// usually appear at the end; retaining only the prefix hides them from the model.
 type cappedBuffer struct {
 	buf       bytes.Buffer
+	tail      []byte
 	limit     int
 	truncated bool
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if c.buf.Len() < c.limit {
-		room := c.limit - c.buf.Len()
-		if room >= len(p) {
-			c.buf.Write(p)
-		} else {
-			c.buf.Write(p[:room])
-			c.truncated = true
-		}
-	} else {
-		c.truncated = true
+	n := len(p)
+	if c.limit <= 0 {
+		c.truncated = c.truncated || n > 0
+		return n, nil
 	}
-	return len(p), nil
+	if !c.truncated {
+		if c.buf.Len()+n <= c.limit {
+			return c.buf.Write(p)
+		}
+		// Split the old buffer only when truncation first becomes necessary.
+		old := append([]byte(nil), c.buf.Bytes()...)
+		c.buf.Reset()
+		c.truncated = true
+		c.retain(old)
+	}
+	c.retain(p)
+	return n, nil
+}
+
+func (c *cappedBuffer) retain(p []byte) {
+	headSize := c.limit / 2
+	if room := headSize - c.buf.Len(); room > 0 {
+		n := min(room, len(p))
+		c.buf.Write(p[:n])
+		p = p[n:]
+	}
+	tailSize := c.limit - headSize
+	if len(p) >= tailSize {
+		c.tail = append(c.tail[:0], p[len(p)-tailSize:]...)
+		return
+	}
+	if excess := len(c.tail) + len(p) - tailSize; excess > 0 {
+		copy(c.tail, c.tail[excess:])
+		c.tail = c.tail[:len(c.tail)-excess]
+	}
+	c.tail = append(c.tail, p...)
 }
 
 func (c *cappedBuffer) String() string {
 	s := c.buf.String()
 	if c.truncated {
-		s += "\n...[output truncated]"
+		// A byte limit can split a multibyte rune at either retained boundary.
+		for len(s) > 0 {
+			_, size := utf8.DecodeLastRuneInString(s)
+			if size != 1 || s[len(s)-1] < utf8.RuneSelf {
+				break
+			}
+			s = s[:len(s)-1]
+		}
+		tail := c.tail
+		for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+			tail = tail[1:]
+		}
+		return strings.ToValidUTF8(s, "?") + "\n...[output truncated; middle omitted]...\n" + strings.ToValidUTF8(string(tail), "?")
 	}
-	return s
+	return strings.ToValidUTF8(s, "?")
 }
 
 // streamWriter forwards writes to a live callback and a capped sink.

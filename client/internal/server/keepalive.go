@@ -6,16 +6,21 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// pingInterval is how often idle WebSockets are pinged. Cloudflare closes
-// tunnelled WebSockets that carry no traffic for about 100 seconds, which
-// showed up as "连接已关闭" in the terminal after a short idle period.
+// pingInterval sends traffic through idle proxies. Three missed intervals
+// bound detection of a broken connection without renewing authentication.
 var pingInterval = 25 * time.Second
 
 // keepAlive pings conn until stop is closed or a ping fails. WriteControl is
 // safe to call concurrently with the connection's other write methods.
 func keepAlive(conn *websocket.Conn, stop <-chan struct{}) {
+	interval := pingInterval
+	pongWait := 3 * interval
+	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
 	go func() {
-		t := time.NewTicker(pingInterval)
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
@@ -23,6 +28,7 @@ func keepAlive(conn *websocket.Conn, stop <-chan struct{}) {
 				return
 			case <-t.C:
 				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					_ = conn.Close()
 					return
 				}
 			}

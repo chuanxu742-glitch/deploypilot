@@ -108,20 +108,50 @@ func EnsureBinary(ctx context.Context) (string, error) {
 // download fetches the asset from the configured bases, writing to dest only
 // after the checksum verifies.
 func download(ctx context.Context, dest, want string) error {
-	tmp := dest + ".tmp"
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(dest), ".cloudflared-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	if err := file.Close(); err != nil {
+		return err
+	}
 	var lastErr error
 	for _, base := range mirrorBases() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		url := fmt.Sprintf("%s/cloudflare/cloudflared/releases/download/%s/%s", base, Version, assetName())
 		if err := fetch(ctx, url, tmp); err != nil {
 			lastErr = err
 			continue
 		}
 		if err := verifyChecksum(tmp, want); err != nil {
-			_ = os.Remove(tmp)
 			lastErr = fmt.Errorf("checksum mismatch from %s: %w", base, err)
 			continue
 		}
-		return os.Rename(tmp, dest)
+		if err := os.Chmod(tmp, 0o755); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, dest); err != nil {
+			// Another instance may have just installed the same verified version.
+			// Never remove a shared cache entry to make room for our own copy.
+			if verifyChecksum(dest, want) == nil {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no download source available")
@@ -195,6 +225,32 @@ func fetch(ctx context.Context, url, dest string) error {
 	defer cancel()
 	ctx, cancelSlow := context.WithCancelCause(ctx)
 	defer cancelSlow(nil)
+	// Start measuring before DNS, TLS and response headers, not just body reads.
+	body := &countingReader{}
+	window, minBytes := rateWindow, minWindowBytes
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		t := time.NewTicker(window)
+		defer t.Stop()
+		var last int64
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cur := body.n.Load()
+				if cur-last < minBytes {
+					cancelSlow(errTooSlow)
+					return
+				}
+				last = cur
+			}
+		}
+	}()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -202,6 +258,9 @@ func fetch(ctx context.Context, url, dest string) error {
 	req.Header.Set("User-Agent", "deploypilot")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if context.Cause(ctx) == errTooSlow {
+			return fmt.Errorf("GET %s: %w", url, errTooSlow)
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -213,36 +272,14 @@ func fetch(ctx context.Context, url, dest string) error {
 		return err
 	}
 	defer f.Close()
-
-	body := &countingReader{r: resp.Body}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		t := time.NewTicker(rateWindow)
-		defer t.Stop()
-		var last int64
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				cur := body.n.Load()
-				if cur-last < minWindowBytes {
-					cancelSlow(errTooSlow)
-					return
-				}
-				last = cur
-			}
-		}
-	}()
-
+	body.r = resp.Body
 	if _, err := io.Copy(f, body); err != nil {
 		if cause := context.Cause(ctx); cause != nil && cause == errTooSlow {
 			return fmt.Errorf("GET %s: %w", url, errTooSlow)
 		}
 		return err
 	}
-	return nil
+	return f.Close()
 }
 
 // verifyChecksum returns nil if the file at path has the expected sha256.

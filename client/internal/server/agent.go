@@ -1,12 +1,13 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/deploypilot/deploypilot/internal/agent"
+	"github.com/deploypilot/deploypilot/internal/auth"
 )
 
 // agentClientMsg is a control message from the browser.
@@ -15,9 +16,7 @@ type agentClientMsg struct {
 	Task string `json:"task"`
 }
 
-// handleAgent bridges a WebSocket to an autonomous agent run. At most one run
-// is active per connection. When the connection closes or the server shuts
-// down, the run is cancelled and the handler waits for it to clean up.
+// The WebSocket observes the server-owned task. Closing a viewer never cancels it.
 func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	up := newUpgrader()
 	conn, err := up.Upgrade(w, r, nil)
@@ -26,39 +25,45 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	defer s.track(r, conn)()
+	conn.SetReadLimit(64 * 1024)
+	touch, stopSession := s.guardSession(r, conn)
+	defer stopSession()
 	stopPing := make(chan struct{})
 	defer close(stopPing)
 	keepAlive(conn, stopPing)
-
+	owner, _ := r.Cookie(auth.CookieName)
+	updates, unsubscribe := s.subscribeTasks()
+	defer unsubscribe()
+	done := make(chan struct{})
+	writerDone := make(chan struct{})
 	var writeMu sync.Mutex
-	send := func(v any) {
+	send := func(data []byte) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		_ = conn.WriteJSON(v)
-	}
-
-	var (
-		mu      sync.Mutex
-		cancel  context.CancelFunc
-		runID   int
-		running sync.WaitGroup
-	)
-	stop := func() {
-		mu.Lock()
-		if cancel != nil {
-			cancel()
-			cancel = nil
+		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if err := conn.WriteMessage(1, data); err != nil {
+			conn.Close()
 		}
-		mu.Unlock()
 	}
-	// On exit: cancel any run, then wait for it so its commands are killed
-	// and the audit log is closed before the handler returns.
-	defer running.Wait()
-	defer stop()
-
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-done:
+				return
+			case data, ok := <-updates:
+				if !ok || !touch() {
+					conn.Close()
+					return
+				}
+				send(data)
+			}
+		}
+	}()
+	defer func() { close(done); conn.Close(); <-writerDone }()
 	for {
-		_, data, readErr := conn.ReadMessage()
-		if readErr != nil {
+		_, data, err := conn.ReadMessage()
+		if err != nil || !touch() {
 			return
 		}
 		var msg agentClientMsg
@@ -67,43 +72,21 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		switch msg.Type {
 		case "stop":
-			stop()
+			s.stopTask()
 		case "start":
-			if !s.llm.HasKey() {
-				send(agent.Event{Type: agent.EventError, Text: "尚未配置模型 API Key，请先在设置中填写。"})
-				continue
-			}
-			mu.Lock()
-			if cancel != nil {
-				mu.Unlock()
-				send(agent.Event{Type: agent.EventError, Text: "已有任务在运行，请先停止。"})
-				continue
-			}
-			ctx, c := context.WithCancel(r.Context())
-			cancel = c
-			runID++
-			id := runID
-			mu.Unlock()
-
-			auditor := s.newAuditor()
-			ag := agent.New(agent.Config{
-				LLM:      s.llm,
-				Executor: agent.NewShellExecutor(),
-				Auditor:  auditor,
-				Emit:     func(e agent.Event) { send(e) },
-			})
-			running.Add(1)
-			go func(task string) {
-				defer running.Done()
-				defer auditor.Close()
-				_ = ag.Run(ctx, task)
-				mu.Lock()
-				if runID == id && cancel != nil {
-					cancel()
-					cancel = nil
+			if reason := s.startTask(msg.Task, owner.Value); reason != "" {
+				data, _ := json.Marshal(agent.Event{Type: agent.EventError, Text: reason})
+				send(data)
+				s.taskMu.Lock()
+				state := "idle"
+				if s.taskCancel != nil {
+					state = s.tasks[0].Phase
 				}
-				mu.Unlock()
-			}(msg.Task)
+				s.taskMu.Unlock()
+				if state == "idle" {
+					send([]byte(`{"type":"run_state","state":"idle"}`))
+				}
+			}
 		}
 	}
 }

@@ -2,7 +2,7 @@
 // cookie authentication for the control plane.
 //
 // Security model:
-//   - A single pairing token is minted at startup and embedded in the QR
+//   - A single pairing token is minted for each new tunnel and embedded in the QR
 //     code fragment. It is 32 random bytes, usable once, and expires after
 //     a short TTL.
 //   - Pairing exchanges the token for an opaque session id delivered as an
@@ -130,6 +130,16 @@ func (m *Manager) Pair(token string) (string, error) {
 // Validate reports whether sid is the active, non-expired session. On
 // success it refreshes the idle deadline.
 func (m *Manager) Validate(sid string) bool {
+	return m.validate(sid, true)
+}
+
+// IsValid checks expiry without extending it; automatic socket heartbeats
+// must not turn an abandoned connection into a perpetual session.
+func (m *Manager) IsValid(sid string) bool {
+	return m.validate(sid, false)
+}
+
+func (m *Manager) validate(sid string, touch bool) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
@@ -143,7 +153,9 @@ func (m *Manager) Validate(sid string) bool {
 		m.sessionID = ""
 		return false
 	}
-	m.sessionSeen = now
+	if touch {
+		m.sessionSeen = now
+	}
 	return true
 }
 
@@ -154,12 +166,33 @@ func (m *Manager) Revoke() {
 	m.sessionID = ""
 }
 
+// RevokeAll also invalidates unused pairing links while the tunnel is down.
+func (m *Manager) RevokeAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionID = ""
+	m.token = ""
+	m.tokenUsed = true
+}
+
+// ResetPairing starts a fresh pairing window after a new tunnel is connected.
+// Old links and sessions stay revoked even if random token generation fails.
+func (m *Manager) ResetPairing() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionID = ""
+	m.token = ""
+	m.tokenUsed = true
+	return m.mintToken()
+}
+
 func (m *Manager) sessionIdleExpiredLocked(now time.Time) bool {
 	return now.Sub(m.sessionSeen) > m.idleTimeout
 }
 
-// SetCookie writes the session cookie for sid onto w.
-func SetCookie(w http.ResponseWriter, sid string, idleTimeout time.Duration) {
+// SetCookie uses a browser-session cookie. The server owns the sliding idle
+// deadline, including activity over WebSockets which cannot renew HTTP cookies.
+func SetCookie(w http.ResponseWriter, sid string, _ time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    sid,
@@ -167,7 +200,6 @@ func SetCookie(w http.ResponseWriter, sid string, idleTimeout time.Duration) {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(idleTimeout.Seconds()),
 	})
 }
 

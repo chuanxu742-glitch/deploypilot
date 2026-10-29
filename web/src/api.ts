@@ -1,8 +1,58 @@
 // Minimal API client for the control plane.
 
+export function wsURL(path: string): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}${path}`;
+}
+
 export interface Health {
   status: string;
   version: string;
+}
+
+export interface MachineInfo {
+  hostname: string;
+  platform: string;
+  username: string;
+  cwd: string;
+  version: string;
+}
+
+export interface TaskSummary {
+  id: string;
+  title: string;
+  startedAt: number;
+  endedAt?: number;
+  phase: "running" | "stopping" | "finished" | "interrupted";
+}
+
+export interface TaskRecord extends TaskSummary {
+  events: import("./agent-state").AgentEvent[];
+}
+
+export interface AgentSnapshot {
+  type: "snapshot";
+  state: "idle" | "running" | "stopping";
+  task: TaskRecord | null;
+  tasks: TaskSummary[];
+}
+
+export async function listTasks(signal?: AbortSignal): Promise<TaskSummary[]> {
+  const response = await fetch("/api/tasks", { signal });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function getTask(id: string, signal?: AbortSignal): Promise<TaskRecord> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(id)}`, { signal });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function machineInfo(): Promise<MachineInfo> {
+  const res = await fetch("/api/machine");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 /** Reads a one-time pairing token from the URL fragment (#t=...). */
@@ -14,7 +64,11 @@ export function readTokenFromHash(): string | null {
 
 /** Removes the token from the address bar without reloading. */
 export function clearHash(): void {
-  history.replaceState(null, "", window.location.pathname + window.location.search);
+  history.replaceState(
+    null,
+    "",
+    window.location.pathname + window.location.search,
+  );
 }
 
 export async function pair(token: string): Promise<void> {
@@ -31,7 +85,26 @@ export async function pair(token: string): Promise<void> {
 /** Checks whether the current cookie is an authenticated session. */
 export async function checkSession(): Promise<boolean> {
   const res = await fetch("/api/session");
+  if (!res.ok && res.status !== 401)
+    throw new Error(`会话校验失败：HTTP ${res.status}`);
   return res.ok;
+}
+
+let authentication: Promise<boolean> | null = null;
+/** Share in-flight pairing: React development effects must not consume the token twice. */
+export function authenticate(): Promise<boolean> {
+  if (!authentication) {
+    authentication = (async () => {
+      const token = readTokenFromHash();
+      if (!token) return checkSession();
+      await pair(token);
+      clearHash();
+      return true;
+    })().finally(() => {
+      authentication = null;
+    });
+  }
+  return authentication;
 }
 
 export async function health(): Promise<Health> {
@@ -54,18 +127,19 @@ export async function llmStatus(): Promise<LLMStatus> {
 export async function setLLMConfig(cfg: {
   apiKey?: string;
   model?: string;
-}): Promise<LLMStatus> {
+}, signal?: AbortSignal): Promise<LLMStatus> {
   const res = await fetch("/api/llm/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(cfg),
+    signal,
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-export async function listModels(): Promise<string[]> {
-  const res = await fetch("/api/llm/models");
+export async function listModels(signal?: AbortSignal): Promise<string[]> {
+  const res = await fetch("/api/llm/models", { signal });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `HTTP ${res.status}`);

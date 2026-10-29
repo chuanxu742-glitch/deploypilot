@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,12 @@ func newLLMServer(t *testing.T) (*Server, *http.Cookie) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(Options{Version: "t", Assets: testAssets(), Auth: m, LLM: llm.New(llm.Config{})})
+	srv := New(Options{Version: "t", Assets: testAssets(), Auth: m, LLM: llm.New(llm.Config{}), HistoryDir: t.TempDir()})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
 
 	rec := httptest.NewRecorder()
 	body := strings.NewReader(`{"token":"` + m.Token() + `"}`)

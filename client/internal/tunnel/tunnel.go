@@ -1,13 +1,16 @@
 package tunnel
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,73 +30,130 @@ type Tunnel struct {
 }
 
 // Start launches cloudflared to expose http://127.0.0.1:<localPort> and
-// blocks until the public URL is parsed or the timeout elapses.
+// waits for both a URL and cloudflared's first successful edge connection.
+// This does not guarantee that public DNS/routing has propagated everywhere.
 func Start(ctx context.Context, binPath string, localPort int) (*Tunnel, error) {
+	dir, err := os.MkdirTemp("", "deploypilot-tunnel-*")
+	if err != nil {
+		return nil, err
+	}
+	pidfile := filepath.Join(dir, "connected.pid")
 	runCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(runCtx, binPath,
 		"tunnel",
 		"--no-autoupdate",
+		"--metrics", "127.0.0.1:0",
+		"--pidfile", pidfile,
+		"--loglevel", "info",
 		"--url", fmt.Sprintf("http://127.0.0.1:%d", localPort),
 	)
 
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
+	// The same writer lets os/exec drain both streams and join its copy goroutines
+	// before Wait returns. Reading stderr then stdout can deadlock the child.
+	urlCh := make(chan string, 1)
+	logs := &urlCapture{out: urlCh}
+	cmd.Stdout, cmd.Stderr = logs, logs
+	cmd.WaitDelay = 2 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		cancel()
+		_ = os.RemoveAll(dir)
 		return nil, err
 	}
 
 	t := &Tunnel{cmd: cmd, cancel: cancel, done: make(chan struct{})}
 
-	urlCh := make(chan string, 1)
-	go scanForURL(io.MultiReader(stderr, stdout), urlCh)
-
 	go func() {
 		err := cmd.Wait()
+		cancel()
+		_ = os.RemoveAll(dir)
 		t.mu.Lock()
 		t.err = err
 		t.mu.Unlock()
 		close(t.done)
 	}()
 
-	select {
-	case u := <-urlCh:
-		t.URL = u
-		return t, nil
-	case <-t.done:
-		return nil, fmt.Errorf("cloudflared exited before announcing a URL: %w", t.Err())
-	case <-time.After(45 * time.Second):
-		t.Close()
-		return nil, errors.New("timed out waiting for tunnel URL")
-	case <-ctx.Done():
-		t.Close()
-		return nil, ctx.Err()
+	deadline := time.NewTimer(120 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		select {
+		case u := <-urlCh:
+			t.URL = u
+		case <-poll.C:
+			if t.URL == "" {
+				continue
+			}
+			pid, err := os.ReadFile(pidfile)
+			if err != nil || strings.TrimSpace(string(pid)) != strconv.Itoa(cmd.Process.Pid) {
+				continue
+			}
+			select {
+			case <-t.done:
+				return nil, t.exitError()
+			case <-ctx.Done():
+				t.Close()
+				return nil, ctx.Err()
+			default:
+				return t, nil
+			}
+		case <-t.done:
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, t.exitError()
+		case <-deadline.C:
+			t.Close()
+			return nil, errors.New("timed out waiting for tunnel URL and first edge connection (120s)")
+		case <-ctx.Done():
+			t.Close()
+			return nil, ctx.Err()
+		}
 	}
 }
 
-// scanForURL reads lines until it finds the tunnel URL, then keeps draining
-// so the subprocess never blocks on a full pipe.
-func scanForURL(r io.Reader, out chan<- string) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	found := false
-	for sc.Scan() {
-		if !found {
-			if m := urlRe.FindString(sc.Text()); m != "" {
-				found = true
-				out <- m
+// urlCapture retains only a small suffix, including across write boundaries.
+// Overlong log lines must neither stop draining nor grow memory without bound.
+type urlCapture struct {
+	mu    sync.Mutex
+	out   chan<- string
+	tail  string
+	found bool
+}
+
+func (w *urlCapture) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(p)
+	for len(p) > 0 && !w.found {
+		size := min(len(p), 4096)
+		chunk := w.tail + string(p[:size])
+		p = p[size:]
+		if u := urlRe.FindString(chunk); u != "" {
+			w.found = true
+			select {
+			case w.out <- u:
+			default:
 			}
 		}
+		if len(chunk) > 256 {
+			chunk = chunk[len(chunk)-256:]
+		}
+		w.tail = chunk
 	}
+	return n, nil
+}
+
+func scanForURL(r io.Reader, out chan<- string) {
+	_, _ = io.Copy(&urlCapture{out: out}, r)
+}
+
+func (t *Tunnel) exitError() error {
+	if err := t.Err(); err != nil {
+		return fmt.Errorf("cloudflared exited: %w", err)
+	}
+	return errors.New("cloudflared exited unexpectedly (exit status 0)")
 }
 
 // Done returns a channel closed when the tunnel process exits.
