@@ -34,7 +34,7 @@ func (s *Server) importLegacyHistory(dir string) {
 				return
 			}
 			if len(event.Text) > 16384 {
-				event.Text = event.Text[:16384]
+				event.Text = truncateUTF8(event.Text, 16384)
 			}
 			current.NextID++
 			event.ID = current.NextID

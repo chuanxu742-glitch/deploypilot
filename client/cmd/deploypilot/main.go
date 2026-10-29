@@ -58,6 +58,10 @@ func run() (runErr error) {
 	}
 
 	llmClient := llm.FromEnv()
+	// The key now lives in the in-memory client only. Drop it from the process
+	// environment so child shells (the PTY) and agent commands cannot read it
+	// back via `env`/`printenv`, which would also leak it to logs and the model.
+	_ = os.Unsetenv("BAILU_API_KEY")
 
 	auditDir, err := agent.DefaultAuditDir()
 	if err != nil {

@@ -48,7 +48,12 @@ func New(cfg Config) *Client {
 	}
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 120 * time.Second}
+		// No overall timeout: a long streaming completion must not be cut off
+		// mid-response. Bound only the time to the first response header, and
+		// inherit proxy settings from the environment via the default transport.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.ResponseHeaderTimeout = 60 * time.Second
+		hc = &http.Client{Transport: tr}
 	}
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {

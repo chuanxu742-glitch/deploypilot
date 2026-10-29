@@ -13,7 +13,20 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// truncateUTF8 shortens s to at most max bytes without splitting a rune, so a
+// persisted/streamed event never ends in an invalid byte sequence.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
+}
 
 type taskRecord struct {
 	ID        string        `json:"id"`
@@ -165,7 +178,7 @@ func (s *Server) emitTask(task *taskRecord, event agent.Event) {
 	event.ID = task.NextID
 	event.TaskID = task.ID
 	if len(event.Text) > 32768 {
-		event.Text = event.Text[:32768]
+		event.Text = truncateUTF8(event.Text, 32768)
 	}
 	task.Events = append(task.Events, event)
 	if len(task.Events) > 512 {
