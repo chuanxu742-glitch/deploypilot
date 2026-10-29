@@ -57,6 +57,11 @@ type Server struct {
 	taskCancel          context.CancelFunc
 	taskWG              sync.WaitGroup
 	taskSubscribers     map[chan []byte]struct{}
+	agentMaxSteps       int
+	// The most recent finished run's conversation, kept in memory only, so the
+	// operator can continue that task. Guarded by taskMu.
+	lastConversation *agent.Conversation
+	lastConvTaskID   string
 }
 
 func (s *Server) acquireAgent() bool {
@@ -92,8 +97,10 @@ type Options struct {
 	LLM *llm.Client
 	// AgentContextBytes bounds each model request; zero uses the agent default.
 	AgentContextBytes int
-	HistoryDir        string
-	LegacyAuditDir    string
+	// AgentMaxSteps is the model-turn budget per run; zero uses the default.
+	AgentMaxSteps  int
+	HistoryDir     string
+	LegacyAuditDir string
 }
 
 // New creates a server. It does not start listening until Start is called.
@@ -108,6 +115,7 @@ func New(opts Options) *Server {
 		legacyAuditDir:    opts.LegacyAuditDir,
 		taskSubscribers:   make(map[chan []byte]struct{}),
 		agentContextBytes: opts.AgentContextBytes,
+		agentMaxSteps:     opts.AgentMaxSteps,
 	}
 	s.shutdownDone = make(chan struct{})
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())

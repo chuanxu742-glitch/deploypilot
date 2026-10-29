@@ -14,6 +14,8 @@ import (
 type agentClientMsg struct {
 	Type string `json:"type"` // start | stop
 	Task string `json:"task"`
+	// ContinueFrom, when set on start, resumes that task's conversation.
+	ContinueFrom string `json:"continueFrom,omitempty"`
 }
 
 // The WebSocket observes the server-owned task. Closing a viewer never cancels it.
@@ -74,7 +76,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		case "stop":
 			s.stopTask()
 		case "start":
-			if reason := s.startTask(msg.Task, owner.Value); reason != "" {
+			if reason := s.startTask(msg.Task, owner.Value, msg.ContinueFrom); reason != "" {
 				data, _ := json.Marshal(agent.Event{Type: agent.EventError, Text: reason})
 				send(data)
 				s.taskMu.Lock()

@@ -100,6 +100,10 @@ type Agent struct {
 	window       *contextWindow
 }
 
+// DefaultMaxSteps is the model-turn budget per run. A run that uses it up can
+// be continued, so this bounds cost per run rather than the whole task.
+const DefaultMaxSteps = 40
+
 // Turn-level retry limits. Interrupted streams executed no tools, and an
 // overflowing request can be compacted further, so both are safe to repeat.
 const (
@@ -124,7 +128,7 @@ func (a *Agent) Conversation() *Conversation {
 // New creates an Agent, applying defaults.
 func New(cfg Config) *Agent {
 	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = 30
+		cfg.MaxSteps = DefaultMaxSteps
 	}
 	if cfg.ContextBytes <= 0 {
 		cfg.ContextBytes = DefaultContextBytes

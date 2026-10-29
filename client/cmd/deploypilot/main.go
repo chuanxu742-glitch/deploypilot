@@ -43,6 +43,10 @@ func run() (runErr error) {
 	if err != nil {
 		return err
 	}
+	maxSteps, err := stepBudget(os.Getenv("DP_MAX_STEPS"))
+	if err != nil {
+		return err
+	}
 	banner.Render(os.Stdout, banner.DefaultOptions(os.Stdout, version))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -74,7 +78,7 @@ func run() (runErr error) {
 	}
 	workspaceID := fmt.Sprintf("%x", sha256.Sum256([]byte(cwd)))[:16]
 	historyDir := filepath.Join(auditDir, "history", workspaceID)
-	srv := server.New(server.Options{Version: version, Assets: assets, Auth: authMgr, LLM: llmClient, AgentContextBytes: contextBytes, HistoryDir: historyDir, LegacyAuditDir: auditDir})
+	srv := server.New(server.Options{Version: version, Assets: assets, Auth: authMgr, LLM: llmClient, AgentContextBytes: contextBytes, AgentMaxSteps: maxSteps, HistoryDir: historyDir, LegacyAuditDir: auditDir})
 	addr, err := srv.Start()
 	if err != nil {
 		return fmt.Errorf("start server: %w", err)
@@ -159,6 +163,17 @@ func contextBudget(value string) (int, error) {
 	n, err := strconv.Atoi(value)
 	if err != nil || n < 16*1024 || n > 2*1024*1024 {
 		return 0, fmt.Errorf("DP_CONTEXT_BYTES must be an integer from 16384 to 2097152")
+	}
+	return n, nil
+}
+
+func stepBudget(value string) (int, error) {
+	if value == "" {
+		return agent.DefaultMaxSteps, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 5 || n > 200 {
+		return 0, fmt.Errorf("DP_MAX_STEPS must be an integer from 5 to 200")
 	}
 	return n, nil
 }

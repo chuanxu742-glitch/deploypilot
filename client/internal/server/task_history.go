@@ -36,6 +36,8 @@ type taskRecord struct {
 	Phase     string        `json:"phase"`
 	Events    []agent.Event `json:"events"`
 	NextID    int64         `json:"nextId"`
+	// ContinuedFrom is the task whose conversation this run resumed.
+	ContinuedFrom string `json:"continuedFrom,omitempty"`
 }
 
 func (s *Server) loadTasks() {
@@ -138,7 +140,12 @@ func (s *Server) snapshotLocked() any {
 			state = task.Phase
 		}
 	}
-	return map[string]any{"type": "snapshot", "state": state, "task": task, "tasks": s.summariesLocked()}
+	snapshot := map[string]any{"type": "snapshot", "state": state, "task": task, "tasks": s.summariesLocked()}
+	// The only task whose in-memory conversation can be continued.
+	if s.taskCancel == nil && s.lastConversation != nil {
+		snapshot["continuable"] = s.lastConvTaskID
+	}
+	return snapshot
 }
 func (s *Server) broadcastTaskLocked(value any) {
 	data, _ := json.Marshal(value)
@@ -197,7 +204,7 @@ func (s *Server) emitTask(task *taskRecord, event agent.Event) {
 	}
 	s.broadcastTaskLocked(event)
 }
-func (s *Server) startTask(text, owner string) string {
+func (s *Server) startTask(text, owner, continueFrom string) string {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	if s.taskCancel != nil {
@@ -205,6 +212,13 @@ func (s *Server) startTask(text, owner string) string {
 	}
 	if strings.TrimSpace(text) == "" {
 		return "任务内容不能为空。"
+	}
+	var resume *agent.Conversation
+	if continueFrom != "" {
+		if s.lastConversation == nil || continueFrom != s.lastConvTaskID {
+			return "无法继续：只能继续最近结束的一个任务，且上下文只保存在内存中，程序重启后不保留。请新建任务。"
+		}
+		resume = s.lastConversation
 	}
 	if !s.llm.HasKey() {
 		return "尚未配置模型 API Key，请先在设置中填写。"
@@ -220,7 +234,7 @@ func (s *Server) startTask(text, owner string) string {
 		s.releaseAgent()
 		return err.Error()
 	}
-	task := &taskRecord{ID: hex.EncodeToString(token), Title: text, StartedAt: time.Now().UnixMilli(), Phase: "running", Events: []agent.Event{}}
+	task := &taskRecord{ID: hex.EncodeToString(token), Title: text, StartedAt: time.Now().UnixMilli(), Phase: "running", Events: []agent.Event{}, ContinuedFrom: continueFrom}
 	s.tasks = append([]*taskRecord{task}, s.tasks...)
 
 	ctx, cancel := context.WithCancel(s.baseCtx)
@@ -264,13 +278,15 @@ func (s *Server) startTask(text, owner string) string {
 	go func() {
 		defer s.taskWG.Done()
 		auditor := s.newAuditor()
-		ag := agent.New(agent.Config{LLM: s.llm.Snapshot(), Executor: s.newExecutor(), Auditor: auditor, ContextBytes: s.agentContextBytes, Emit: func(e agent.Event) { s.publishTerminalAgent(e); s.emitTask(task, e) }})
+		ag := agent.New(agent.Config{LLM: s.llm.Snapshot(), Executor: s.newExecutor(), Auditor: auditor, ContextBytes: s.agentContextBytes, MaxSteps: s.agentMaxSteps, Resume: resume, Emit: func(e agent.Event) { s.publishTerminalAgent(e); s.emitTask(task, e) }})
 		_ = ag.Run(ctx, text)
 		_ = auditor.Close()
 		s.taskMu.Lock()
 		defer s.taskMu.Unlock()
 		cancel()
 		s.taskCancel = nil
+		// Keep only this run's conversation; an earlier one can no longer be resumed.
+		s.lastConversation, s.lastConvTaskID = ag.Conversation(), task.ID
 		task.Phase = "finished"
 		if s.baseCtx.Err() != nil {
 			task.Phase = "interrupted"
