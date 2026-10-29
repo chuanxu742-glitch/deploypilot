@@ -28,6 +28,41 @@ func TestCorruptScrollbackDoesNotDisableSession(t *testing.T) {
 	}
 }
 
+func TestBoundedOutputKeepsHeadAndTail(t *testing.T) {
+	b := &boundedOutput{halfLimit: 4}
+	b.WriteString("ABCDEFGHIJ") // head ABCD, middle EF, tail GHIJ
+	got := b.String()
+	if !strings.HasPrefix(got, "ABCD") {
+		t.Fatalf("head not kept: %q", got)
+	}
+	if !strings.HasSuffix(got, "GHIJ") {
+		t.Fatalf("tail (where failures appear) not kept: %q", got)
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("truncation not marked: %q", got)
+	}
+	if strings.Contains(got, "EF") {
+		t.Fatalf("middle should be omitted: %q", got)
+	}
+}
+
+func TestBoundedOutputShortIsVerbatim(t *testing.T) {
+	b := &boundedOutput{halfLimit: 16}
+	b.WriteString("hello")
+	if got := b.String(); got != "hello" {
+		t.Fatalf("short output altered: %q", got)
+	}
+}
+
+func TestBoundedOutputRuneSafeBoundaries(t *testing.T) {
+	// 300 bytes of 3-byte runes, halfLimit forces a cut mid-rune.
+	b := &boundedOutput{halfLimit: 10}
+	b.WriteString(strings.Repeat("世", 100))
+	if got := b.String(); !utf8.ValidString(got) {
+		t.Fatalf("result is not valid UTF-8: %q", got)
+	}
+}
+
 func TestHistoryStartupErrorNamesDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "tasks.json"), []byte("broken {"), 0600); err != nil {

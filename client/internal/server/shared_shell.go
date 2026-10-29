@@ -15,9 +15,53 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/deploypilot/deploypilot/internal/pty"
 )
+
+// boundedOutput keeps the first and last halfLimit bytes of a stream and marks
+// the middle as omitted. Command failures usually surface at the end, so the
+// tail must be retained, not only the head. Boundaries are trimmed to valid
+// UTF-8 so a split rune cannot corrupt the result sent to the model.
+type boundedOutput struct {
+	head      []byte
+	tail      []byte
+	halfLimit int
+	truncated bool
+}
+
+func (b *boundedOutput) WriteString(s string) {
+	data := []byte(s)
+	if room := b.halfLimit - len(b.head); room > 0 {
+		n := min(room, len(data))
+		b.head = append(b.head, data[:n]...)
+		data = data[n:]
+	}
+	if len(data) == 0 {
+		return
+	}
+	b.truncated = true
+	b.tail = append(b.tail, data...)
+	if len(b.tail) > b.halfLimit {
+		b.tail = b.tail[len(b.tail)-b.halfLimit:]
+	}
+}
+
+func (b *boundedOutput) String() string {
+	if !b.truncated {
+		return strings.ToValidUTF8(string(b.head), "")
+	}
+	head := b.head
+	for len(head) > 0 && !utf8.RuneStart(head[len(head)-1]) {
+		head = head[:len(head)-1]
+	}
+	tail := b.tail
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return strings.ToValidUTF8(string(head), "") + "\n...[output truncated; middle omitted]...\n" + strings.ToValidUTF8(string(tail), "")
+}
 
 type terminalSnapshot struct {
 	Cwd    string   `json:"cwd"`
@@ -85,7 +129,11 @@ func newSharedShell(dir string) (*sharedShell, error) {
 	go shell.read()
 	shell.readyPath = filepath.Join(dir, "shell-ready")
 	_ = os.Remove(shell.readyPath)
-	bootstrap := "PROMPT_COMMAND=" + shellQuote("printf '%s' \"$PWD\" > "+shellQuote(shell.readyPath))
+	// Disable pagers and interactive prompts so deploy commands (systemctl,
+	// journalctl, git, apt) cannot stall waiting on a pager or a y/n question.
+	// Export PROMPT_COMMAND so a nested interactive bash still writes the
+	// ready-file used to detect that the shell is back at a prompt.
+	bootstrap := "export PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER= DEBIAN_FRONTEND=noninteractive; export PROMPT_COMMAND=" + shellQuote("printf '%s' \"$PWD\" > "+shellQuote(shell.readyPath))
 	if runtime.GOOS == "windows" {
 		bootstrap = "function global:prompt { [IO.File]::WriteAllText(" + psQuote(shell.readyPath) + ",(Get-Location).Path); 'PS '+(Get-Location).Path+'> ' }"
 		bootstrap += "; function global:dp { . ([ScriptBlock]::Create([IO.File]::ReadAllText(" + psQuote(filepath.Join(dir, "command.ps1")) + "))) }"
@@ -267,6 +315,10 @@ func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(str
 	if s.readyEnabled {
 		wait := time.NewTicker(20 * time.Millisecond)
 		defer wait.Stop()
+		// Bound the wait so an interactive foreground program (pager, editor,
+		// sudo/su, or an unfinished input line) fails fast with a clear reason
+		// instead of hanging for the whole command timeout.
+		busyDeadline := time.After(30 * time.Second)
 		for {
 			if data, err := os.ReadFile(s.readyPath); err == nil && len(data) > 0 {
 				break
@@ -274,6 +326,8 @@ func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(str
 			select {
 			case <-ctx.Done():
 				return -1, "", fmt.Errorf("terminal is busy or has unfinished input: %w", ctx.Err())
+			case <-busyDeadline:
+				return -1, "", errors.New("terminal appears busy with an interactive program (pager, editor, sudo/su, or an unfinished line); finish or exit it in the terminal, then retry")
 			case <-s.dead:
 				return -1, "", errors.New("terminal session ended")
 			case <-wait.C:
@@ -329,13 +383,15 @@ try {
 		}
 	} else {
 		code := "__dp_code_" + id
-		script = "eval \"$(printf %s '" + encoded + "' | base64 -d)\"\n" + code + "=$?\nprintf '%s\\n%s' \"$" + code + "\" \"$PWD\" > " + shellQuote(resultPath) + "\nunset " + code + "\n"
+		// Reset shell options first so a previous command's leaked -e/-u/pipefail
+		// cannot abort this one. The command's own options still apply within it.
+		script = "set +e +u +o pipefail 2>/dev/null\n" + "eval \"$(printf %s '" + encoded + "' | base64 -d)\"\n" + code + "=$?\nprintf '%s\\n%s' \"$" + code + "\" \"$PWD\" > " + shellQuote(resultPath) + "\nunset " + code + "\n"
 		input = ". " + shellQuote(scriptPath) + "; printf '\\033]777;" + id + "\\007'\n"
 	}
 	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
 		return -1, "", err
 	}
-	var captured strings.Builder
+	captured := &boundedOutput{halfLimit: 16 * 1024}
 	var captureMu sync.Mutex
 	completed := make(chan struct{})
 	s.mu.Lock()
@@ -343,9 +399,7 @@ try {
 	s.output = func(data string) {
 		captureMu.Lock()
 		defer captureMu.Unlock()
-		if captured.Len() < 128*1024 {
-			captured.WriteString(data)
-		}
+		captured.WriteString(data)
 		if onOutput != nil && runtime.GOOS != "windows" {
 			onOutput(terminalEscapes.ReplaceAllString(data, ""))
 		}
