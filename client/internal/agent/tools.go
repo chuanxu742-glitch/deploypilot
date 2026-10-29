@@ -30,7 +30,7 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolRunCommand,
-				Description: "Run a shell command using " + shell + ". Returns exit code and combined stdout/stderr. Prefer non-interactive commands; commands run sequentially.",
+				Description: "Run a shell command using " + shell + " in the operator's persistent terminal (cd and exported variables persist between calls). Returns exit code and combined stdout/stderr (long output keeps its head and tail). Commands cannot receive keyboard input: use non-interactive flags, and start long-running services in the background with logs instead of in the foreground. Commands run sequentially.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{

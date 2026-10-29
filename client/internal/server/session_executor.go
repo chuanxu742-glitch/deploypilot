@@ -90,5 +90,7 @@ func (e *sessionExecutor) MachineInfo(ctx context.Context) string {
 	if err != nil {
 		return fmt.Sprintf("OS: %s; host: %s; terminal unavailable: %v", runtime.GOOS, host, err)
 	}
-	return fmt.Sprintf("OS: %s; architecture: %s; host: %s; working directory: %s. Commands share the persistent interactive terminal. Directory and environment changes persist.", runtime.GOOS, runtime.GOARCH, host, e.WorkingDirectory())
+	// Hardware and toolchain probes run as separate read-only processes so
+	// they do not clutter the operator's terminal.
+	return fmt.Sprintf("OS: %s; architecture: %s; host: %s; working directory: %s. Commands share the persistent interactive terminal. Directory and environment changes persist.\n%s", runtime.GOOS, runtime.GOARCH, host, e.WorkingDirectory(), e.files.MachineInfo(ctx))
 }

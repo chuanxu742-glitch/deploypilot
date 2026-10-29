@@ -76,6 +76,16 @@ type Config struct {
 	ContextBytes int
 	// Emit receives events; must be safe to call from the Run goroutine.
 	Emit func(Event)
+	// Resume continues an earlier conversation: Run's task is appended as a
+	// follow-up instruction instead of starting a fresh context.
+	Resume *Conversation
+}
+
+// Conversation is the model-visible state of a finished run. It can seed a
+// later run so the operator can continue a task (e.g. after the step budget
+// ran out, or to supply information the model asked for).
+type Conversation struct {
+	window *contextWindow
 }
 
 // Agent drives a tool-using model loop to accomplish a deployment task.
@@ -86,6 +96,29 @@ type Agent struct {
 	maxSteps     int
 	contextBytes int
 	emit         func(Event)
+	resume       *Conversation
+	window       *contextWindow
+}
+
+// Turn-level retry limits. Interrupted streams executed no tools, and an
+// overflowing request can be compacted further, so both are safe to repeat.
+const (
+	maxStreamRetries   = 2
+	maxOverflowRetries = 2
+	minContextBytes    = 16 * 1024
+)
+
+// streamRetryDelay is a variable so tests can shorten it.
+var streamRetryDelay = time.Second
+
+// Conversation returns the state of the last Run, or nil if it never started
+// a model conversation. Every assistant tool call in it has a tool result, so
+// it is valid to resume.
+func (a *Agent) Conversation() *Conversation {
+	if a.window == nil {
+		return nil
+	}
+	return &Conversation{window: a.window}
 }
 
 // New creates an Agent, applying defaults.
@@ -115,6 +148,73 @@ func New(cfg Config) *Agent {
 			e.Timestamp = time.Now().UnixMilli()
 			cfg.Emit(e)
 		},
+		resume: cfg.Resume,
+	}
+}
+
+// completeTurn gives every tool call in the assistant message a result, so a
+// stopped or finished turn never leaves an unpaired call in the history.
+func completeTurn(turn []llm.Message) []llm.Message {
+	if len(turn) == 0 {
+		return turn
+	}
+	answered := map[string]bool{}
+	for _, m := range turn[1:] {
+		if m.Role == llm.RoleTool {
+			answered[m.ToolCallID] = true
+		}
+	}
+	for _, tc := range turn[0].ToolCalls {
+		if !answered[tc.ID] {
+			turn = append(turn, llm.Message{Role: llm.RoleTool, ToolCallID: tc.ID, Name: tc.Function.Name, Content: "error: not executed (the task ended before this call)"})
+		}
+	}
+	return turn
+}
+
+// streamTurn requests one model turn. It retries a connection that dropped
+// mid-response and, when the provider reports a context overflow, compacts to
+// a smaller budget and asks again. budget persists across turns.
+func (a *Agent) streamTurn(ctx context.Context, step int, window *contextWindow, tools []llm.Tool, budget *int) (*llm.ChatResult, error) {
+	interrupted, overflowed := 0, 0
+	for {
+		req, compacted, err := window.prepare(a.llm.Model(), tools, *budget)
+		if err != nil {
+			a.emit(Event{Type: EventError, Text: err.Error()})
+			return nil, err
+		}
+		if compacted {
+			a.emit(Event{Type: EventStatus, Text: "已压缩较早的上下文，保留任务目标与执行摘要；缺少的细节可重新检查。", Step: step})
+			a.audit.Append(AuditEntry{Kind: "context_compaction", Note: fmt.Sprintf("request_bytes=%d budget=%d", requestBytes(req), *budget)})
+		}
+		a.emit(Event{Type: EventActivity, State: "generating", Text: "等待模型响应", Step: step})
+		res, err := a.llm.StreamChat(ctx, req, func(delta string) {
+			a.emit(Event{Type: EventThinking, Text: delta})
+		})
+		if err == nil {
+			return res, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		switch {
+		case llm.IsStreamInterrupted(err) && interrupted < maxStreamRetries:
+			interrupted++
+			a.emit(Event{Type: EventStatus, Text: fmt.Sprintf("模型连接中断，本轮没有执行任何工具，正在重新请求（第 %d 次）；上面可能出现重复的文字。", interrupted), Step: step})
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(streamRetryDelay * time.Duration(interrupted)):
+			}
+			continue
+		case llm.IsContextOverflow(err) && overflowed < maxOverflowRetries && *budget > minContextBytes:
+			overflowed++
+			*budget = max(minContextBytes, *budget*2/3)
+			a.emit(Event{Type: EventStatus, Text: fmt.Sprintf("模型提示上下文超长，已收紧到 %d 字节并重新请求。可调低 DP_CONTEXT_BYTES 避免这一步。", *budget), Step: step})
+			continue
+		}
+		a.emit(Event{Type: EventError, Text: a.llm.Redact(err.Error())})
+		return nil, err
 	}
 }
 
@@ -125,16 +225,24 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 		return err
 	}
 	a.audit.Append(AuditEntry{Kind: "task", Note: task})
-	a.emit(Event{Type: EventActivity, State: "preparing", Text: "正在收集机器环境"})
-	info := a.exec.MachineInfo(ctx)
-
-	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: systemPrompt},
-		{Role: llm.RoleSystem, Content: "目标机器平台: " + runtime.GOOS + "/" + runtime.GOARCH + "\n目标机器环境信息:\n" + info},
-		{Role: llm.RoleUser, Content: task},
+	var window *contextWindow
+	if a.resume != nil && a.resume.window != nil {
+		// Continue the earlier conversation; the machine context is already in it.
+		window = a.resume.window
+		window.addFollowUp(task)
+		a.emit(Event{Type: EventStatus, Text: "在上一个任务的上下文上继续执行。"})
+	} else {
+		a.emit(Event{Type: EventActivity, State: "preparing", Text: "正在收集机器环境"})
+		info := a.exec.MachineInfo(ctx)
+		window = newContextWindow([]llm.Message{
+			{Role: llm.RoleSystem, Content: systemPrompt},
+			{Role: llm.RoleSystem, Content: "目标机器平台: " + runtime.GOOS + "/" + runtime.GOARCH + "\n目标机器环境信息:\n" + info},
+			{Role: llm.RoleUser, Content: task},
+		})
 	}
+	a.window = window
 	tools := toolSet()
-	window := newContextWindow(messages)
+	budget := a.contextBytes
 	nudged := false
 
 	for step := 1; step <= a.maxSteps; step++ {
@@ -145,21 +253,8 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 		default:
 		}
 
-		req, compacted, err := window.prepare(a.llm.Model(), tools, a.contextBytes)
+		res, err := a.streamTurn(ctx, step, window, tools, &budget)
 		if err != nil {
-			a.emit(Event{Type: EventError, Text: err.Error()})
-			return err
-		}
-		if compacted {
-			a.emit(Event{Type: EventStatus, Text: "已压缩较早的上下文，保留任务目标与执行摘要；缺少的细节可重新检查。", Step: step})
-			a.audit.Append(AuditEntry{Kind: "context_compaction", Note: fmt.Sprintf("request_bytes=%d budget=%d", requestBytes(req), a.contextBytes)})
-		}
-		a.emit(Event{Type: EventActivity, State: "generating", Text: "等待模型响应", Step: step})
-		res, err := a.llm.StreamChat(ctx, req, func(delta string) {
-			a.emit(Event{Type: EventThinking, Text: delta})
-		})
-		if err != nil {
-			a.emit(Event{Type: EventError, Text: a.llm.Redact(err.Error())})
 			return err
 		}
 
@@ -182,6 +277,7 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 				window.turns = append(window.turns, append(turn, llm.Message{Role: llm.RoleUser, Content: finishReplyNudge}))
 				continue
 			}
+			window.turns = append(window.turns, turn)
 			if content == "" {
 				content = "模型没有给出总结。请查看上面的执行记录，或换个说法重新下达任务。"
 			}
@@ -191,23 +287,27 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 			return fmt.Errorf("model stopped without explicit finish")
 		}
 
+		// Record the turn whatever happens below, with every call answered, so
+		// the conversation stays valid if the operator continues it later.
+		finished := false
 		for _, tc := range res.Message.ToolCalls {
-			if err := ctx.Err(); err != nil {
-				return err
+			if ctx.Err() != nil || finished {
+				break
 			}
 			done, toolMsg := a.runTool(ctx, step, tc)
-			if err := ctx.Err(); err != nil {
-				return err
-			}
 			turn = append(turn, toolMsg)
-			if done {
-				return nil
-			}
+			finished = done
 		}
-		window.turns = append(window.turns, turn)
+		window.turns = append(window.turns, completeTurn(turn))
+		if finished {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
-	a.emit(Event{Type: EventFinal, Text: fmt.Sprintf("已达到最大步数 (%d)，任务终止。", a.maxSteps), Success: false})
+	a.emit(Event{Type: EventFinal, Text: fmt.Sprintf("已达到最大步数 (%d)，任务暂停。可以在该任务上继续执行，保留已有进展。", a.maxSteps), Success: false})
 	return fmt.Errorf("max steps (%d) reached", a.maxSteps)
 }
 
@@ -398,6 +498,14 @@ var systemPrompt = strings.TrimSpace(`
 安全:
 - 不要执行破坏性命令（删库、格式化磁盘、关机重启等）。这类命令会被系统拦截。
 - 优先使用非交互式命令（加 -y、DEBIAN_FRONTEND=noninteractive 等），避免卡在交互提示。
+
+执行环境（重要）:
+- 命令在操作员可见的同一个持久终端里依次执行：cd 和 export 的环境变量会保留到后续命令。不要在命令里用 exit 退出 shell，也不要单独执行 set -e；需要遇错即停时用 && 串联，或包成 bash -c '...'。
+- 你无法回答任何交互提示：没有人能替你输入密码、y/n 或编辑器内容。sudo 用 sudo -n（环境信息里写明了是否有免密 sudo）；不要打开 vim/less/top 等全屏程序，查看内容用 cat/head/tail/grep，查进程用 ps。
+- 长期运行的服务（vLLM、Ollama、Web 服务等）不要放在前台运行，否则命令会一直等到超时并被中断、服务随之被杀。用 nohup <命令> > /tmp/<名称>.log 2>&1 & 在后台启动（能用 systemd 或 docker -d 更好），再用 sleep、tail 日志和 curl 轮询确认就绪。Windows 用 Start-Process 并重定向日志。
+- 预计较慢的命令（大模型下载、pip 安装大包、构建镜像）设置 timeout_seconds（最长 3600），或改为后台执行后轮询进度。
+- 非零退出码不一定是故障：grep 没匹配、which/test 未找到都会返回 1，根据输出判断。
+- 需要操作员提供的信息（密码、令牌、要选择的版本等）无法自行获得时，调用 finish（success=false），在 summary 里写清需要什么。操作员可以在该任务上继续执行并补充信息，已有进展会保留。
 
 部署知识:
 - ModelScope 下载模型: 用 pip install modelscope，然后 modelscope download --model <id> --local_dir <dir>；国内网络通常可直连 modelscope.cn。HuggingFace 不通时可设 HF_ENDPOINT=https://hf-mirror.com。

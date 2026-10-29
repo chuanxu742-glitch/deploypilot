@@ -29,14 +29,49 @@ type contextWindow struct {
 	turns   [][]llm.Message
 	history []historyEntry
 	omitted int
+	// followUps are operator instructions added when a task is continued. Each
+	// is also placed chronologically as a turn; if compaction drops that turn,
+	// request() restates it so an instruction is never silently lost.
+	followUps []string
 }
+
+// maxFollowUpBytes bounds one restated follow-up instruction.
+const maxFollowUpBytes = 4096
 
 func newContextWindow(prefix []llm.Message) *contextWindow {
 	return &contextWindow{prefix: append([]llm.Message(nil), prefix...)}
 }
 
+// addFollowUp appends an operator instruction for a continued task.
+func (c *contextWindow) addFollowUp(text string) {
+	c.followUps = append(c.followUps, text)
+	c.turns = append(c.turns, []llm.Message{{Role: llm.RoleUser, Content: "操作员追加指令（在上面的执行基础上继续）：\n" + text}})
+}
+
+// droppedFollowUps returns follow-ups whose chronological turn was compacted.
+func (c *contextWindow) droppedFollowUps() []string {
+	var dropped []string
+	for _, text := range c.followUps {
+		present := false
+		for _, turn := range c.turns {
+			for _, m := range turn {
+				if m.Role == llm.RoleUser && strings.HasSuffix(m.Content, text) {
+					present = true
+				}
+			}
+		}
+		if !present {
+			dropped = append(dropped, clipContext(text, maxFollowUpBytes))
+		}
+	}
+	return dropped
+}
+
 func (c *contextWindow) request(model string, tools []llm.Tool) llm.ChatRequest {
 	messages := append([]llm.Message(nil), c.prefix...)
+	if dropped := c.droppedFollowUps(); len(dropped) > 0 {
+		messages = append(messages, llm.Message{Role: llm.RoleUser, Content: "操作员此前的追加指令（仍然有效，按时间顺序）：\n- " + strings.Join(dropped, "\n- ")})
+	}
 	if len(c.history) > 0 || c.omitted > 0 {
 		data, _ := json.Marshal(c.history)
 		// Keep untrusted historical output out of system/user instructions.
@@ -59,7 +94,15 @@ func (c *contextWindow) prepare(model string, tools []llm.Tool, budget int) (llm
 	if requestBytes(req) <= budget {
 		return req, false, nil
 	}
-	base := llm.ChatRequest{Model: model, Messages: c.prefix, Tools: tools, Stream: true}
+	baseMessages := c.prefix
+	if len(c.followUps) > 0 {
+		var all []string
+		for _, text := range c.followUps {
+			all = append(all, clipContext(text, maxFollowUpBytes))
+		}
+		baseMessages = append(append([]llm.Message(nil), c.prefix...), llm.Message{Role: llm.RoleUser, Content: "操作员此前的追加指令（仍然有效，按时间顺序）：\n- " + strings.Join(all, "\n- ")})
+	}
+	base := llm.ChatRequest{Model: model, Messages: baseMessages, Tools: tools, Stream: true}
 	if requestBytes(base) > budget {
 		return llm.ChatRequest{}, false, fmt.Errorf("任务目标、系统说明和工具定义超过上下文预算 %d 字节；请缩短任务或增大 DP_CONTEXT_BYTES", budget)
 	}

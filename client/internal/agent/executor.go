@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -17,7 +18,9 @@ import (
 // shellCommand returns the shell invocation for the current OS.
 func shellCommand(command string) (string, []string) {
 	if runtime.GOOS == "windows" {
-		return "powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", command}
+		// PowerShell writes pipe output in the console code page (e.g. GBK on
+		// Chinese Windows); force UTF-8 so non-ASCII text is not garbled.
+		return "powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; " + command}
 	}
 	return "bash", []string{"-lc", command}
 }
@@ -218,29 +221,64 @@ func (shellExecutor) EditFile(path, oldStr, newStr string, replaceAll bool) (int
 	return count, nil
 }
 
+type machineProbe struct{ label, cmd string }
+
+// machineProbes returns read-only environment checks for the host OS. Each
+// prints a fallback instead of failing so the summary is always readable.
+func machineProbes() []machineProbe {
+	if runtime.GOOS == "windows" {
+		have := func(name, cmd, missing string) string {
+			return "if (Get-Command " + name + " -ErrorAction SilentlyContinue) { " + cmd + " } else { '" + missing + "' }"
+		}
+		return []machineProbe{
+			{"OS", "(Get-CimInstance Win32_OperatingSystem | ForEach-Object { $_.Caption + ' ' + $_.Version + ' ' + $_.OSArchitecture })"},
+			{"User", "$id=[Security.Principal.WindowsIdentity]::GetCurrent(); $admin=([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); $id.Name + '; administrator: ' + $admin"},
+			{"CPU/Mem", "$env:NUMBER_OF_PROCESSORS + ' logical CPUs; ' + [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1) + ' GB RAM'"},
+			{"Disk", "Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null } | ForEach-Object { $_.Name + ': free ' + [math]::Round($_.Free/1GB,1) + ' GB' }"},
+			{"GPU", have("nvidia-smi", "nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader", "no nvidia gpu")},
+			{"Python", have("python", "python --version 2>&1", "no python")},
+			{"Docker", have("docker", "docker --version", "no docker")},
+			{"Network", "try { (Invoke-WebRequest -Uri https://modelscope.cn -Method Head -UseBasicParsing -TimeoutSec 5).StatusCode } catch { 'modelscope.cn unreachable' }"},
+		}
+	}
+	return []machineProbe{
+		{"OS", "uname -srm; (. /etc/os-release 2>/dev/null && echo \"$PRETTY_NAME\")"},
+		{"User", "echo \"$(id -un) uid=$(id -u)\"; if [ \"$(id -u)\" = 0 ]; then echo 'running as root'; elif sudo -n true 2>/dev/null; then echo 'passwordless sudo: yes'; else echo 'passwordless sudo: no (sudo would prompt; it cannot be answered)'; fi"},
+		{"CPU/Mem", "echo \"$(nproc) CPUs\"; free -h 2>/dev/null | head -n2"},
+		{"Disk", "df -h / \"$HOME\" 2>/dev/null | tail -n +2 | sort -u"},
+		{"GPU", "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader; else echo 'no nvidia gpu'; fi"},
+		{"CUDA", "if command -v nvcc >/dev/null 2>&1; then nvcc --version | tail -n1; else echo 'no nvcc in PATH'; fi"},
+		{"Python", "if command -v python3 >/dev/null 2>&1; then python3 --version; python3 -m pip --version 2>/dev/null || echo 'no pip'; else echo 'no python3'; fi"},
+		{"Docker", "if command -v docker >/dev/null 2>&1; then docker --version; docker info >/dev/null 2>&1 && echo 'docker daemon reachable' || echo 'docker daemon not reachable by this user'; else echo 'no docker'; fi"},
+		{"Init", "if [ -d /run/systemd/system ]; then echo systemd; else echo 'no systemd (use nohup/background processes)'; fi"},
+		{"Network", "curl -s -m 5 -o /dev/null -w 'modelscope.cn HTTP %{http_code}' https://modelscope.cn 2>/dev/null || echo 'modelscope.cn unreachable'"},
+	}
+}
+
+// maxProbeOutput bounds each probe line in the agent's context.
+const maxProbeOutput = 600
+
 func (shellExecutor) MachineInfo(ctx context.Context) string {
-	probes := []struct {
-		label string
-		cmd   string
-	}{
-		{"OS", "uname -a; (. /etc/os-release 2>/dev/null && echo $PRETTY_NAME)"},
-		{"CPU/Mem", "nproc; free -h 2>/dev/null | head -n2"},
-		{"Disk", "df -h / 2>/dev/null | tail -n1"},
-		{"GPU", "nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || echo 'no nvidia gpu'"},
-		{"CUDA", "nvcc --version 2>/dev/null | tail -n1 || echo 'no nvcc'"},
-		{"Python", "python3 --version 2>/dev/null || echo 'no python3'"},
-		{"Docker", "docker --version 2>/dev/null || echo 'no docker'"},
-		{"Network", "curl -s -m 5 -o /dev/null -w '%{http_code}' https://modelscope.cn 2>/dev/null || echo 'unreachable'"},
+	probes := machineProbes()
+	results := make([]string, len(probes))
+	var wg sync.WaitGroup
+	for i, p := range probes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, out, err := shellExecutor{}.Run(ctx, p.cmd, 10*time.Second, nil)
+			out = strings.TrimSpace(out)
+			if out == "" && err != nil {
+				out = "unavailable (" + err.Error() + ")"
+			}
+			if len(out) > maxProbeOutput {
+				out = strings.ToValidUTF8(out[:maxProbeOutput], "") + " …"
+			}
+			results[i] = p.label + ": " + strings.ReplaceAll(out, "\n", "; ")
+		}()
 	}
-	var b strings.Builder
-	for _, p := range probes {
-		_, out, _ := shellExecutor{}.Run(ctx, p.cmd, 15*time.Second, nil)
-		b.WriteString(p.label)
-		b.WriteString(": ")
-		b.WriteString(strings.TrimSpace(out))
-		b.WriteString("\n")
-	}
-	return b.String()
+	wg.Wait()
+	return strings.Join(results, "\n") + "\n"
 }
 
 func parentDir(path string) string {
