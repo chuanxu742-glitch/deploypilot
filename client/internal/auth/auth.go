@@ -39,12 +39,22 @@ type Manager struct {
 	idleTimeout time.Duration
 	now         func() time.Time
 
-	mu          sync.Mutex
-	token       string
-	tokenExpiry time.Time
-	tokenUsed   bool
-	sessionID   string
-	sessionSeen time.Time
+	mu           sync.Mutex
+	token        string
+	tokenExpiry  time.Time
+	tokenUsed    bool
+	sessionID    string
+	sessionSeen  time.Time
+	sessionEnded func()
+}
+
+// SetSessionEndedHook registers a callback fired (once per occurrence, in its
+// own goroutine) when the active session ends by idle expiry. The console uses
+// it to reprint a fresh pairing link so the operator can reconnect.
+func (m *Manager) SetSessionEndedHook(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionEnded = fn
 }
 
 // Options configures a Manager.
@@ -151,6 +161,11 @@ func (m *Manager) validate(sid string, touch bool) bool {
 	}
 	if m.sessionIdleExpiredLocked(now) {
 		m.sessionID = ""
+		// Edge-triggered: the cleared sessionID means later calls return early
+		// above, so the hook fires exactly once per expiry. Run it off the lock.
+		if m.sessionEnded != nil {
+			go m.sessionEnded()
+		}
 		return false
 	}
 	if touch {

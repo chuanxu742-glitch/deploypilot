@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -97,9 +98,35 @@ func run() (runErr error) {
 		return fmt.Errorf("prepare cloudflared: %w", err)
 	}
 
+	// pairingURL holds the current public tunnel URL, or nil while the tunnel is
+	// down. The session-ended hook uses it to reprint a link only when a tunnel
+	// is actually up.
+	var pairingURL atomic.Pointer[string]
+	printLink := func(header, publicURL, token string) {
+		link := fmt.Sprintf("%s/#t=%s", publicURL, token)
+		fmt.Println(header)
+		tunnel.PrintQR(os.Stdout, link)
+		fmt.Println("\n或直接打开链接：")
+		fmt.Println("  " + link)
+	}
+	// When the single session idle-expires, mint a fresh token and reprint the
+	// QR to the console so the operator (who can see this terminal) can pair
+	// again. Without this the only way back was to restart the program.
+	authMgr.SetSessionEndedHook(func() {
+		u := pairingURL.Load()
+		if u == nil {
+			return
+		}
+		token, err := authMgr.ResetPairing()
+		if err != nil {
+			return
+		}
+		printLink("\n会话已空闲超时并结束。如需重新接入，请扫描新的二维码或打开下方链接：", *u, token)
+	})
+
 	connected := false
 	err = tunnel.Maintain(ctx, binPath, port, tunnel.Callbacks{
-		Unavailable: authMgr.RevokeAll,
+		Unavailable: func() { pairingURL.Store(nil); authMgr.RevokeAll() },
 		Retry: func(cause error, delay time.Duration) {
 			fmt.Fprintf(os.Stderr, "\n隧道暂不可用：%v；%s 后重试。\n", cause, delay)
 		},
@@ -108,15 +135,13 @@ func run() (runErr error) {
 			if err != nil {
 				return err
 			}
+			u := publicURL
+			pairingURL.Store(&u)
 			if connected {
 				fmt.Println("\n隧道已重新建立。旧会话已失效，请使用新的二维码或链接重新配对；中断的任务不会自动重跑。")
 			}
 			connected = true
-			link := fmt.Sprintf("%s/#t=%s", publicURL, token)
-			fmt.Println("\n用手机或电脑扫描下方二维码接入：")
-			tunnel.PrintQR(os.Stdout, link)
-			fmt.Println("\n或直接打开链接：")
-			fmt.Println("  " + link)
+			printLink("\n用手机或电脑扫描下方二维码接入：", publicURL, token)
 			fmt.Println("\n按 Ctrl+C 结束会话并关闭隧道。")
 			return nil
 		},

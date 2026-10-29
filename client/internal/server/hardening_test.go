@@ -7,8 +7,26 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/gorilla/websocket"
 )
+
+func TestIdleSessionSendsExpiryCloseCode(t *testing.T) {
+	srv, cookie := shortSessionServer(t)
+	c := agentSocket(t, srv, cookie)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, _ = c.ReadMessage() // initial snapshot
+	_, _, err := c.ReadMessage()
+	ce, ok := err.(*websocket.CloseError)
+	if !ok {
+		t.Fatalf("expected a websocket close frame on expiry, got %T: %v", err, err)
+	}
+	if ce.Code != 4401 {
+		t.Fatalf("expiry close code = %d, want 4401 (session expired)", ce.Code)
+	}
+}
 
 func TestCorruptScrollbackDoesNotDisableSession(t *testing.T) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
