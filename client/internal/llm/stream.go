@@ -81,7 +81,14 @@ func (a *assembler) result() *ChatResult {
 	for _, idx := range a.order {
 		msg.ToolCalls = append(msg.ToolCalls, *a.toolCalls[idx])
 	}
-	return &ChatResult{Message: msg, FinishReason: a.finishReason}
+	reason := a.finishReason
+	// Several OpenAI-compatible servers (some vLLM/Ollama builds) report
+	// finish_reason "stop" for a completed tool-call response. The tool calls
+	// are still validated below, so treat that as a normal tool_calls finish.
+	if reason == "stop" && len(msg.ToolCalls) > 0 {
+		reason = "tool_calls"
+	}
+	return &ChatResult{Message: msg, FinishReason: reason}
 }
 
 func validateResult(r *ChatResult) error {

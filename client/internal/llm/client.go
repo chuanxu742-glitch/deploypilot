@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -210,6 +211,7 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 
 	asm := newAssembler()
 	totalBytes := 0
+	sawDone := false
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -224,6 +226,7 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		started = true
 		if data == "[DONE]" {
+			sawDone = true
 			break
 		}
 		var chunk streamChunk
@@ -248,7 +251,15 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// The connection broke mid-response: a transport failure, not a bad reply.
+		return nil, fmt.Errorf("%w: %v", ErrStreamInterrupted, err)
+	}
+	if !sawDone && asm.finishReason == "" {
+		// The body ended without [DONE] or a finish reason (proxy/tunnel drop).
+		return nil, fmt.Errorf("%w: response ended early", ErrStreamInterrupted)
 	}
 	result = asm.result()
 	if err := validateResult(result); err != nil {
@@ -257,8 +268,37 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	return result, nil
 }
 
-// streamError is not retried: malformed/truncated output is not a completed
-// assistant turn, and its partial content may already have reached the UI.
+// ErrStreamInterrupted marks a response whose connection dropped before the
+// model finished. No tools from it were executed, so the caller may safely
+// request the same turn again; already-streamed text may then appear twice.
+var ErrStreamInterrupted = errors.New("model stream interrupted")
+
+// IsStreamInterrupted reports whether err is a transport interruption.
+func IsStreamInterrupted(err error) bool { return errors.Is(err, ErrStreamInterrupted) }
+
+// IsContextOverflow reports whether the provider rejected the request because
+// the prompt exceeds the model's context window. The byte budget is only an
+// estimate, so the caller can compact harder and retry.
+func IsContextOverflow(err error) bool {
+	var ae *apiError
+	if !errors.As(err, &ae) || (ae.status != http.StatusBadRequest && ae.status != http.StatusRequestEntityTooLarge) {
+		return false
+	}
+	body := strings.ToLower(ae.body)
+	if ae.status == http.StatusRequestEntityTooLarge {
+		return true
+	}
+	for _, marker := range []string{"context length", "context_length", "maximum context", "context window", "too many tokens", "prompt is too long", "token limit", "tokens exceed", "max_tokens", "reduce the length"} {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// streamError is not retried inside StreamChat: once text has streamed, an
+// automatic replay would duplicate it. Interrupted streams are additionally
+// marked with ErrStreamInterrupted so the agent loop can decide to retry.
 type streamError struct{ err error }
 
 func (e *streamError) Error() string { return e.err.Error() }
@@ -273,12 +313,23 @@ func (c *Client) auth(req *http.Request) {
 func (c *Client) statusError(resp *http.Response) error {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	msg := c.Redact(string(bytes.TrimSpace(b)))
-	return &apiError{status: resp.StatusCode, body: msg}
+	return &apiError{status: resp.StatusCode, body: msg, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
+}
+
+// parseRetryAfter reads the delay-seconds form of Retry-After (the form used by
+// rate limiters). HTTP-date values and garbage yield zero.
+func parseRetryAfter(v string) time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
 }
 
 type apiError struct {
-	status int
-	body   string
+	status     int
+	body       string
+	retryAfter time.Duration
 }
 
 func (e *apiError) Error() string {
@@ -299,19 +350,34 @@ func retryable(err error) bool {
 	return err != nil
 }
 
+// retryBaseDelay is the first backoff step; a variable so tests can shorten it.
+var retryBaseDelay = 500 * time.Millisecond
+
+// maxRetryAfter caps a provider-requested wait so a bad header cannot stall a
+// task indefinitely.
+const maxRetryAfter = 60 * time.Second
+
+// withRetry retries requests that failed before a response stream began.
+// Backoff is 0.5s, 1s, 2s, 4s, 8s (about 15s in total), or the provider's
+// Retry-After when it asks for longer, so a short rate limit can clear.
 func (c *Client) withRetry(ctx context.Context, fn func() error) error {
-	const maxAttempts = 4
-	delay := 500 * time.Millisecond
+	const maxAttempts = 6
+	delay := retryBaseDelay
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		err = fn()
 		if err == nil || !retryable(err) || attempt == maxAttempts {
 			return err
 		}
+		wait := delay
+		var ae *apiError
+		if errors.As(err, &ae) && ae.retryAfter > wait {
+			wait = min(ae.retryAfter, maxRetryAfter)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(delay):
+		case <-time.After(wait):
 		}
 		delay *= 2
 	}
