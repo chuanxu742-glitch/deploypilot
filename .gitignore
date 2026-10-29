@@ -1,0 +1,8 @@
+.tools/
+.probe-tmp/
+dist/
+web/node_modules/
+client/deploypilot.exe
+client/internal/webui/dist/assets/
+*.log
+.env
