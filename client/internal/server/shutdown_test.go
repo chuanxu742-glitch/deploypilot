@@ -38,11 +38,17 @@ func TestShutdownClosesWebSockets(t *testing.T) {
 		t.Fatalf("shutdown took too long: %s", time.Since(start))
 	}
 
+	// Drain any frame already queued at connect time (e.g. the initial
+	// snapshot), then require that the socket actually closes rather than
+	// stays open. A single read could otherwise observe that pending frame.
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, _, err := conn.ReadMessage(); err == nil {
-		t.Fatal("expected websocket to be closed after shutdown")
-	} else if strings.Contains(err.Error(), "timeout") {
-		t.Fatalf("websocket still open after shutdown: %v", err)
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			if strings.Contains(err.Error(), "timeout") {
+				t.Fatalf("websocket still open after shutdown: %v", err)
+			}
+			break
+		}
 	}
 	_ = httptest.NewRecorder
 }
