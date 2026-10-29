@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -153,6 +154,23 @@ func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, 
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return ReadResult{}, err
 	}
+	// NUL bytes do not occur in text; returning a binary file would only fill
+	// the model's context with garbage.
+	if bytes.IndexByte(buf[:min(n, 8192)], 0) >= 0 {
+		return ReadResult{}, fmt.Errorf("%s looks like a binary file (%d bytes); inspect it with run_command (file, ls -lh, head -c, xxd | head) instead", path, size)
+	}
+	// End a partial page on a whole character so the next page (which starts
+	// at NextOffset) does not split a multi-byte rune across two reads.
+	if offset+int64(n) < size {
+		for back := 1; back <= utf8.UTFMax && back <= n; back++ {
+			if utf8.RuneStart(buf[n-back]) {
+				if !utf8.FullRune(buf[n-back : n]) {
+					n -= back
+				}
+				break
+			}
+		}
+	}
 	next := offset + int64(n)
 	return ReadResult{
 		Content:    string(buf[:n]),
@@ -184,14 +202,21 @@ func (shellExecutor) AppendFile(path, content string) error {
 }
 
 func (shellExecutor) EditFile(path, oldStr, newStr string, replaceAll bool) (int, error) {
-	info, err := os.Stat(path)
+	// Edit the real file behind a symlink (e.g. nginx sites-enabled/default):
+	// renaming over the link would replace the link with a copy and leave the
+	// actual configuration untouched.
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(real)
 	if err != nil {
 		return 0, err
 	}
 	if info.Size() > maxEditFileBytes {
 		return 0, fmt.Errorf("file is %d bytes (> %d); edit it with run_command using sed/awk instead", info.Size(), maxEditFileBytes)
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(real)
 	if err != nil {
 		return 0, err
 	}
@@ -209,12 +234,27 @@ func (shellExecutor) EditFile(path, oldStr, newStr string, replaceAll bool) (int
 		content = strings.Replace(content, oldStr, newStr, 1)
 		count = 1
 	}
-	// Atomic replace: write to a temp file in the same dir, then rename.
-	tmp := path + ".dp-edit.tmp"
-	if err := os.WriteFile(tmp, []byte(content), info.Mode().Perm()); err != nil {
+	// Atomic replace: write a uniquely named temp file beside the real file,
+	// copy its mode and owner, then rename over it.
+	f, err := os.CreateTemp(filepath.Dir(real), "."+filepath.Base(real)+".dp-edit-*")
+	if err != nil {
 		return 0, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	tmp := f.Name()
+	_, err = f.WriteString(content)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, info.Mode().Perm())
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return 0, err
+	}
+	// Editing as root must not silently hand a service's file to root.
+	preserveOwner(tmp, info)
+	if err := os.Rename(tmp, real); err != nil {
 		_ = os.Remove(tmp)
 		return 0, err
 	}
