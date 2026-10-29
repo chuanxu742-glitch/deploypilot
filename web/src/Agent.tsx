@@ -3,6 +3,7 @@ import { getTask, listTasks, llmStatus, notifySessionExpired, wsURL, SESSION_EXP
 import {
   applyAgentEvent,
   buildTimeline,
+  defaultContinue,
   isFailedFinal,
   mergeEvent,
   MAX_EVENTS,
@@ -88,6 +89,8 @@ export function AgentPanel({
   const newTaskModeRef = useRef(false);
   const pendingStartRef = useRef(false);
   const lastSubmittedRef = useRef("");
+  const [continuableId, setContinuableId] = useState("");
+  const [continueMode, setContinueMode] = useState(false);
   const seenIdsRef = useRef(new Set<string>());
   const retryDelayRef = useRef(300);
   const hasSnapshotRef = useRef(false);
@@ -161,6 +164,7 @@ export function AgentPanel({
     hasSnapshotRef.current = true;
     const summaries = snapshot.tasks ?? [];
     setTasks(summaries);
+    setContinuableId(snapshot.continuable ?? "");
     const incoming = snapshot.task;
     const shouldSelect = snapshot.state !== "idle" || pendingStartRef.current || (selectedIdRef.current === null && !newTaskModeRef.current) || selectedIdRef.current === incoming?.id;
     if (!shouldSelect) return;
@@ -277,6 +281,13 @@ export function AgentPanel({
   useEffect(() => {
     onPhaseChange?.(phase);
   }, [phase, onPhaseChange]);
+  // Only the shown task can be continued, and only while it is the server's
+  // continuable one; reset the default whenever that changes.
+  const canContinue = !isBusy(phase) && !!record && record.id === continuableId;
+  useEffect(() => {
+    setContinueMode(defaultContinue(record?.events ?? [], canContinue));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record?.id, canContinue]);
   useEffect(() => {
     if (!busy) return;
     const timer = setInterval(
@@ -312,7 +323,8 @@ export function AgentPanel({
       lastSubmittedRef.current = text;
       pendingStartRef.current = true;
       newTaskModeRef.current = false;
-      socket.send(JSON.stringify({ type: "start", task: text }));
+      const continueFrom = continueMode && canContinue && recordRef.current ? recordRef.current.id : undefined;
+      socket.send(JSON.stringify(continueFrom ? { type: "start", task: text, continueFrom } : { type: "start", task: text }));
       selectedIdRef.current = null;
       recordRef.current = null;
       setRecord(null);
@@ -392,7 +404,7 @@ export function AgentPanel({
         ref={inputRef}
         value={task}
         onChange={(event) => setTask(event.target.value)}
-        placeholder={busy ? "准备下一条任务" : empty ? "输入部署任务" : "输入下一个任务"}
+        placeholder={busy ? "准备下一条任务" : empty ? "输入部署任务" : continueMode && canContinue ? "补充说明，在此任务的进展上继续" : "输入下一个任务"}
         rows={2}
         onKeyDown={(event) => {
           // Some IMEs report keyCode 229 after composition ends; that Enter selects text.
@@ -411,6 +423,12 @@ export function AgentPanel({
       />
       <div className="composer-foot">
         <Settings status={status} disabled={busy} onSaved={setStatus} version={version} />
+        {canContinue && (
+          <label className="continue-toggle" title="保留该任务的执行上下文，模型从已有进展继续；关闭则作为独立的新任务">
+            <input type="checkbox" checked={continueMode} onChange={(event) => setContinueMode(event.target.checked)} />
+            <span>在此任务上继续</span>
+          </label>
+        )}
         <button
           className="button primary"
           onClick={start}
@@ -439,7 +457,7 @@ export function AgentPanel({
             <span className="dot" data-tone={phaseTone[phase]} />
             <span role="status">{label}</span>
           </span>
-          {tasks.length > 0 && <select className="task-history-select" aria-label="任务历史" value={record?.id ?? ""} disabled={busy} onChange={(event) => void selectTask(event.target.value)}><option value="">任务历史</option>{tasks.map((item) => <option key={item.id} value={item.id}>{item.title} | {new Date(item.startedAt).toLocaleString()}</option>)}</select>}
+          {tasks.length > 0 && <select className="task-history-select" aria-label="任务历史" value={record?.id ?? ""} disabled={busy} onChange={(event) => void selectTask(event.target.value)}><option value="">任务历史</option>{tasks.map((item) => <option key={item.id} value={item.id}>{item.continuedFrom ? "（续）" : ""}{item.title} | {new Date(item.startedAt).toLocaleString()}</option>)}</select>}
           {seconds > 0 && (
             <span className="meta-extra">{formatDuration(seconds)}</span>
           )}

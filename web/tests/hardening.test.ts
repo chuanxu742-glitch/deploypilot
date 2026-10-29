@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isFailedFinal, type AgentEvent } from "../src/agent-state.ts";
+import { defaultContinue, isFailedFinal, type AgentEvent } from "../src/agent-state.ts";
 import {
   onSessionExpired,
   notifySessionExpired,
@@ -29,4 +29,14 @@ test("session-expired handler fires until cleared", () => {
   onSessionExpired(null);
   notifySessionExpired();
   assert.equal(count, 2);
+});
+
+test("continuing is the default only for an unfinished continuable task", () => {
+  const failed = [{ type: "tool_done" }, { type: "final", success: false }] as AgentEvent[];
+  const succeeded = [{ type: "final", success: true }] as AgentEvent[];
+  const stopped = [{ type: "tool_call" }] as AgentEvent[];
+  assert.equal(defaultContinue(failed, true), true);
+  assert.equal(defaultContinue(stopped, true), true);
+  assert.equal(defaultContinue(succeeded, true), false);
+  assert.equal(defaultContinue(failed, false), false);
 });

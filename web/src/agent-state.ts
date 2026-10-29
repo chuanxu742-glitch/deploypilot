@@ -24,6 +24,19 @@ export type TaskPhase =
 export function isFailedFinal(event: AgentEvent): boolean {
   return event.type === "final" && event.success === false;
 }
+
+/**
+ * Whether the composer should continue the shown task by default: only when
+ * the server can resume it and its last outcome was not a confirmed success
+ * (step budget used up, failed, or waiting for operator input).
+ */
+export function defaultContinue(events: AgentEvent[], canContinue: boolean): boolean {
+  if (!canContinue) return false;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === "final") return events[i].success !== true;
+  }
+  return true;
+}
 export const MAX_EVENTS = 300;
 export const MAX_EVENT_TEXT = 32_768;
 export const TRUNCATED = "…（较早内容已截断）\n";
