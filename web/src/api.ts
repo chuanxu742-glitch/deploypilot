@@ -1,5 +1,20 @@
 // Minimal API client for the control plane.
 
+// The server closes an expired/revoked WebSocket with this application close
+// code (see internal/server/session.go) so the UI can tell expiry apart from a
+// transient drop and return to the pairing gate instead of retrying forever.
+export const SESSION_EXPIRED_CODE = 4401;
+
+let sessionExpiredHandler: (() => void) | null = null;
+/** Registers (or clears, with null) the handler run when the session expires. */
+export function onSessionExpired(handler: (() => void) | null): void {
+  sessionExpiredHandler = handler;
+}
+/** Called by the WS/HTTP layers on a 4401 close or a post-pairing 401. */
+export function notifySessionExpired(): void {
+  sessionExpiredHandler?.();
+}
+
 export function wsURL(path: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}${path}`;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { wsURL } from "./api";
+import { notifySessionExpired, wsURL, SESSION_EXPIRED_CODE } from "./api";
 import { Icon } from "./Icon";
 import { Terminal as XTerm } from "@xterm/xterm";
 import type { ITheme } from "@xterm/xterm";
@@ -156,13 +156,14 @@ export function Terminal({
         } catch { /* Ignore text frames that are not recognized control messages. */ }
       };
       current.onerror = () => current.close();
-      current.onclose = () => {
+      current.onclose = (event) => {
         if (disposed || socket !== current) return;
         clearTimeout(connectTimer);
         setConnection("disconnected");
         agentStateRef.current = "unknown";
         setAgentState("unknown");
         term.options.disableStdin = true;
+        if (event.code === SESSION_EXPIRED_CODE) notifySessionExpired();
       };
     };
     reconnectRef.current = connect;

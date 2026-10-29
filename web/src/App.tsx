@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { authenticate, machineInfo, type MachineInfo } from "./api";
+import { authenticate, machineInfo, onSessionExpired, type MachineInfo } from "./api";
 import { Terminal, type TerminalConnection } from "./Terminal";
 import { AgentPanel, isBusy, phaseTone } from "./Agent";
 import type { TaskPhase } from "./agent-state";
@@ -53,6 +53,14 @@ export function App() {
     return () => {
       active = false;
     };
+  }, []);
+
+  // When the server reports the session has expired (a 4401 WebSocket close),
+  // drop back to the pairing gate so the operator can scan the fresh QR the
+  // client reprints, instead of staring at an endless "reconnecting" state.
+  useEffect(() => {
+    onSessionExpired(() => setAuth({ kind: "unauthed" }));
+    return () => onSessionExpired(null);
   }, []);
 
   useLayoutEffect(() => {

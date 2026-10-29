@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/agent-state.test.ts tests/ui-style.test.ts tests/terminal-agent.test.ts",
+    "test": "node --test tests/agent-state.test.ts tests/ui-style.test.ts tests/terminal-agent.test.ts tests/hardening.test.ts",
     "test:browser": "npm run build && node tests/workspace.browser.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",

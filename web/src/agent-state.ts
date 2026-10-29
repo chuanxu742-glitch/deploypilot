@@ -19,6 +19,11 @@ export interface AgentEvent {
 
 export type TaskPhase =
   "idle" | "connecting" | "running" | "stopping" | "finished" | "interrupted" | "disconnected";
+
+/** A final event the model reported as an explicit failure (success === false). */
+export function isFailedFinal(event: AgentEvent): boolean {
+  return event.type === "final" && event.success === false;
+}
 export const MAX_EVENTS = 300;
 export const MAX_EVENT_TEXT = 32_768;
 export const TRUNCATED = "…（较早内容已截断）\n";

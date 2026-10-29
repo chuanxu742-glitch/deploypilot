@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { getTask, listTasks, llmStatus, wsURL, type AgentSnapshot, type LLMStatus, type TaskRecord, type TaskSummary } from "./api";
+import { getTask, listTasks, llmStatus, notifySessionExpired, wsURL, SESSION_EXPIRED_CODE, type AgentSnapshot, type LLMStatus, type TaskRecord, type TaskSummary } from "./api";
 import {
   applyAgentEvent,
   buildTimeline,
+  isFailedFinal,
   mergeEvent,
   MAX_EVENTS,
   TRUNCATED,
@@ -86,6 +87,7 @@ export function AgentPanel({
   const selectedIdRef = useRef<string | null>(null);
   const newTaskModeRef = useRef(false);
   const pendingStartRef = useRef(false);
+  const lastSubmittedRef = useRef("");
   const seenIdsRef = useRef(new Set<string>());
   const retryDelayRef = useRef(300);
   const hasSnapshotRef = useRef(false);
@@ -212,6 +214,17 @@ export function AgentPanel({
           if (value?.type === "snapshot") { handleSnapshot(value as AgentSnapshot); return; }
           if (typeof value?.type !== "string") return;
           const event = value as AgentEvent;
+          // A start rejection arrives as an error with no task record installed.
+          // Surface the reason in the composer and restore the typed draft
+          // instead of silently clearing it and hiding an empty log.
+          if (event.type === "error" && pendingStartRef.current && !recordRef.current) {
+            pendingStartRef.current = false;
+            setPendingTitle("");
+            updatePhase("idle");
+            setStatusError(event.text || "任务未能启动，请稍后重试。");
+            setTask((current) => current || lastSubmittedRef.current);
+            return;
+          }
           if (event.type === "run_state") {
             const next = applyAgentEvent(phaseRef.current, event);
             updatePhase(next);
@@ -234,11 +247,17 @@ export function AgentPanel({
         }
       };
       socket.onerror = () => socket.close();
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         clearTimeout(timeout);
         if (!active || socketRef.current !== socket) return;
         socketRef.current = null;
         setConnectionState("disconnected");
+        // An expired/revoked session will keep rejecting the upgrade; stop
+        // retrying and hand off to the pairing gate instead of looping forever.
+        if (event.code === SESSION_EXPIRED_CODE) {
+          notifySessionExpired();
+          return;
+        }
         const delay = retryDelayRef.current;
         retryDelayRef.current = Math.min(5_000, delay * 2);
         reconnectTimer.current = setTimeout(connect, delay);
@@ -289,6 +308,8 @@ export function AgentPanel({
     const socket = socketRef.current;
     if (!text || !status?.hasKey || isBusy(phaseRef.current) || pendingStartRef.current || socket?.readyState !== WebSocket.OPEN) return;
     try {
+      setStatusError("");
+      lastSubmittedRef.current = text;
       pendingStartRef.current = true;
       newTaskModeRef.current = false;
       socket.send(JSON.stringify({ type: "start", task: text }));
@@ -545,20 +566,22 @@ function TimelineRow({ item, live }: { item: TimelineItem; live: boolean }) {
           </div>
         </li>
       );
-    case "final":
+    case "final": {
+      const failed = isFailedFinal(item.event);
       return (
-        <li className="tl tl-final">
+        <li className={failed ? "tl tl-final tl-error" : "tl tl-final"}>
           <span className="tl-marker">
-            <Icon name="file" size={14} />
+            <Icon name={failed ? "alert" : "file"} size={14} />
           </span>
           <div className="tl-body">
             <div className="final-card">
-              <strong>任务结束</strong>
+              <strong>{failed ? "任务未完成" : "任务结束"}</strong>
               {item.event.text && <p>{item.event.text}</p>}
             </div>
           </div>
         </li>
       );
+    }
   }
   return null;
 }
