@@ -301,27 +301,41 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	s.taskMu.Lock()
-	defer s.taskMu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
+	// Marshal the response under taskMu (fast, in-memory) but write it to the
+	// possibly slow network connection without the lock, so a slow client
+	// cannot stall emitTask (agent output) or terminal viewers.
+	var payload []byte
 	if r.URL.Path == "/api/tasks" {
-		_ = json.NewEncoder(w).Encode(s.summariesLocked())
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
-	for _, task := range s.tasks {
-		if task.ID == id {
-			record, err := s.readTaskLocked(task)
-			if err != nil {
-				http.Error(w, "task history unavailable", 500)
-				return
+		s.taskMu.Lock()
+		payload, _ = json.Marshal(s.summariesLocked())
+		s.taskMu.Unlock()
+	} else {
+		id := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
+		s.taskMu.Lock()
+		var record *taskRecord
+		var err error
+		for _, task := range s.tasks {
+			if task.ID == id {
+				record, err = s.readTaskLocked(task)
+				break
 			}
-			_ = json.NewEncoder(w).Encode(record)
+		}
+		if record != nil && err == nil {
+			payload, err = json.Marshal(record)
+		}
+		s.taskMu.Unlock()
+		if err != nil {
+			http.Error(w, "task history unavailable", 500)
+			return
+		}
+		if record == nil {
+			http.Error(w, "task not found", 404)
 			return
 		}
 	}
-	http.Error(w, "task not found", 404)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(payload)
 }
 
 func (s *Server) taskPath(id string) string { return filepath.Join(s.historyDir, "task-"+id+".json") }
