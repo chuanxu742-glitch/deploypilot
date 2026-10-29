@@ -95,7 +95,7 @@ Windows 下控制的是这台 Windows 机器本身，网页终端用的是 Power
 | `DP_VERSION` | install.sh 安装的版本标签 | `latest` |
 | `DP_BASE_URL` | 发布文件的完整基础 URL | GitHub Releases |
 | `DP_MIRROR` | 加在 GitHub URL 前的镜像前缀，如 `https://gh-proxy.com/` | 空 |
-| `DP_INSTALL_DIR` | 二进制安装目录 | 临时目录（运行一次） |
+| `DP_INSTALL_DIR` | 二进制安装目录 | Linux `~/.deploypilot/bin`；Windows `%LOCALAPPDATA%\DeployPilot` |
 | `DP_CLOUDFLARED_MIRROR` | cloudflared 下载源，逗号分隔，每项作为 GitHub 路径前缀，如 `https://gh-proxy.com/https://github.com` | 内置列表 |
 | `DP_CLOUDFLARED_BIN` | 使用已有的 cloudflared，跳过下载 | 空 |
 | `BAILU_API_KEY` | 白鹿 API Key（如 `sk-xxxx`） | 空 |
@@ -109,6 +109,8 @@ Windows 下控制的是这台 Windows 机器本身，网页终端用的是 Power
 - 启动最多等待 120 秒；取得临时网址且 cloudflared 确认首次边缘连接后显示二维码，公共 DNS/路由可能还需要短暂传播时间。
 - 短暂网络中断由 cloudflared 自行重连。进程退出或启动失败时，客户端按 1、2、4、8 秒退避；连续 5 次失败后退出并显示原因，运行超过 1 分钟重置该计数。
 - 进程重建后会换网址，旧会话和旧配对链接立即失效；请使用终端里的新二维码重新配对。中断任务不会自动重放；历史记录、近期终端输出和最后工作目录会恢复。程序重启会新建 Shell，旧进程、临时变量及环境修改不能恢复。
+- 会话空闲 30 分钟超时后，若隧道仍在线，终端会自动打印新的二维码和链接；重新扫码即可接入，无需重启程序。此时网页会回到配对页提示重新扫码。
+- 下载 cloudflared 与访问模型接口都遵循 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 等标准代理环境变量。
 - WebSocket 每 25 秒发送 ping；75 秒没有 pong 回复就关闭失联连接并进入既有任务清理流程。心跳不延长认证有效期。
 - cloudflared 下载从请求开始每 10 秒检查进度；响应头卡住或窗口内不足 512 KiB 时切换下一源，每源最长 5 分钟。下载文件独立隔离，校验成功后才替换缓存。
 
@@ -118,7 +120,7 @@ Windows 下控制的是这台 Windows 机器本身，网页终端用的是 Power
 - **会话**：同一时间只允许一个会话；Cookie 为 `HttpOnly` + `Secure` + `SameSite=Strict` 的浏览器会话 Cookie。服务端统一判断空闲 30 分钟失效，包括已建立的 WebSocket；实际输入和任务输出续期，自动 ping/pong 不续期。
 - **WebSocket** 校验 Origin。
 - **退出**：Ctrl+C 吊销会话、关闭服务和隧道。
-- **API Key** 只保存在内存中，错误信息里会脱敏。
+- **API Key** 只保存在内存中，错误信息里会脱敏。通过 `BAILU_API_KEY` 提供时，读取后会立即从进程环境变量中移除，避免终端或 AI 执行 `env`/`printenv` 读到它。
 - **审计日志**：`~/.deploypilot/audit-<时间>.jsonl`。
 - **命令黑名单**：拦截 `rm -rf /`、`mkfs`、`dd` 写块设备、`wipefs`、`shred /dev/*`、fork bomb、`shutdown`/`reboot`/`poweroff`、`chmod -R 777 /`、`chown -R ... /` 等。黑名单只是兜底，不是沙箱。
 - 再次提醒：只在客户同意时运行，权限等同于启动它的用户。
@@ -160,7 +162,7 @@ powershell -ExecutionPolicy Bypass -File scripts\live-test.ps1 -FromClipboard -M
 
 ### 发布
 
-推送 `v*` 标签后由 GitHub Actions 构建并发布 Release。
+目前发布由本地脚本 `scripts\publish.ps1` 完成：它用 `client\build.ps1` 交叉编译、生成 `checksums.txt`，再上传二进制、`checksums.txt`、`install.sh`、`install.ps1` 到 GitHub Release，并回读校验线上文件与本地一致。仓库暂未包含 `.github/workflows` 自动发布流水线。
 
 ## 目录结构
 
