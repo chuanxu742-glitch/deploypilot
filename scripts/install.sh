@@ -2,7 +2,7 @@
 # DeployPilot installer.
 #
 # Usage:
-#   curl -fsSL https://github.com/66kris-ye/deploypilot/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.sh | sh
 #
 # Environment overrides:
 #   DP_VERSION      release tag to install (default: latest)
@@ -18,7 +18,7 @@
 
 set -eu
 
-REPO="${DP_REPO:-66kris-ye/deploypilot}"
+REPO="${DP_REPO:-chuanxu742-glitch/deploypilot}"
 VERSION="${DP_VERSION:-latest}"
 MIRRORS="https://gh-proxy.com/ https://ghfast.top/"
 

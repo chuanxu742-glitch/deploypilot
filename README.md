@@ -35,15 +35,15 @@ flowchart LR
 支持 Linux amd64 / arm64：
 
 ```sh
-curl -fsSL https://github.com/66kris-ye/deploypilot/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.sh | sh
 ```
 
-脚本会识别架构，从 GitHub Releases（`66kris-ye/deploypilot`）下载 `deploypilot-linux-<arch>` 和 `checksums.txt`，校验 sha256 后直接运行。
+脚本会识别架构，从 GitHub Releases（`chuanxu742-glitch/deploypilot`）下载 `deploypilot-linux-<arch>` 和 `checksums.txt`，校验 sha256 后直接运行。
 
 国内网络可加镜像前缀：
 
 ```sh
-curl -fsSL https://gh-proxy.com/https://github.com/66kris-ye/deploypilot/releases/latest/download/install.sh | DP_MIRROR=https://gh-proxy.com/ sh
+curl -fsSL https://gh-proxy.com/https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.sh | DP_MIRROR=https://gh-proxy.com/ sh
 ```
 
 运行后把终端里的二维码或链接发给操作员。
@@ -53,13 +53,13 @@ curl -fsSL https://gh-proxy.com/https://github.com/66kris-ye/deploypilot/release
 在 PowerShell 里执行：
 
 ```powershell
-irm https://github.com/66kris-ye/deploypilot/releases/latest/download/install.ps1 | iex
+irm https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.ps1 | iex
 ```
 
 国内网络较慢时：
 
 ```powershell
-$env:DP_MIRROR='https://gh-proxy.com/'; irm https://gh-proxy.com/https://github.com/66kris-ye/deploypilot/releases/latest/download/install.ps1 | iex
+$env:DP_MIRROR='https://gh-proxy.com/'; irm https://gh-proxy.com/https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.ps1 | iex
 ```
 
 Windows 下控制的是这台 Windows 机器本身，网页终端用的是 PowerShell（通过 ConPTY）。目前提供 amd64 版，arm64 机器会以模拟方式运行 amd64 版。

@@ -71,7 +71,10 @@ try {
     }
     [IO.File]::WriteAllText($checksums, (($lines -join "`n") + "`n"), (New-Object Text.UTF8Encoding($false)))
 
-    Copy-Item (Join-Path $PSScriptRoot '..\scripts\install.sh') (Join-Path $distDir 'install.sh') -Force
+    # install.sh is piped into sh on Linux: force LF even if the checkout has
+    # CRLF (core.autocrlf), or the first line fails with "set: Illegal option".
+    $sh = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\scripts\install.sh')).Replace("`r`n", "`n")
+    [IO.File]::WriteAllText((Join-Path $distDir 'install.sh'), $sh, (New-Object Text.UTF8Encoding($false)))
     Copy-Item (Join-Path $PSScriptRoot '..\scripts\install.ps1') (Join-Path $distDir 'install.ps1') -Force
 
     Write-Host "`nartifacts in $distDir :"

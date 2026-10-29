@@ -1,0 +1,2 @@
+# Shell scripts run on Linux via `curl ... | sh`; CRLF breaks them (set -eu\r).
+*.sh text eol=lf

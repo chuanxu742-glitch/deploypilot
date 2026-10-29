@@ -12,7 +12,7 @@
 # Keep this file ASCII-only (Windows PowerShell 5.1 reads BOM-less files as ANSI).
 
 param(
-    [string]$Owner = "66kris-ye",
+    [string]$Owner = "chuanxu742-glitch",
     [string]$Repo = "deploypilot",
     [string]$Tag = "v0.1.0",
     [switch]$IncludeSource,

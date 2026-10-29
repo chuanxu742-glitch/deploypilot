@@ -1,10 +1,10 @@
 # DeployPilot installer for Windows (PowerShell).
 #
 # Usage (run in PowerShell):
-#   irm https://github.com/66kris-ye/deploypilot/releases/latest/download/install.ps1 | iex
+#   irm https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.ps1 | iex
 #
 # Behind a slow GitHub connection (mainland China), set a mirror first:
-#   $env:DP_MIRROR='https://gh-proxy.com/'; irm https://gh-proxy.com/https://github.com/66kris-ye/deploypilot/releases/latest/download/install.ps1 | iex
+#   $env:DP_MIRROR='https://gh-proxy.com/'; irm https://gh-proxy.com/https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.ps1 | iex
 #
 # Environment overrides:
 #   DP_VERSION      release tag (default: latest)
@@ -16,7 +16,7 @@
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$repo = if ($env:DP_REPO) { $env:DP_REPO } else { '66kris-ye/deploypilot' }
+$repo = if ($env:DP_REPO) { $env:DP_REPO } else { 'chuanxu742-glitch/deploypilot' }
 $version = if ($env:DP_VERSION) { $env:DP_VERSION } else { 'latest' }
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
