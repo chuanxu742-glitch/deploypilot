@@ -69,7 +69,8 @@ Windows 下控制的是这台 Windows 机器本身，网页终端用的是 Power
 1. 扫码或打开链接，自动完成配对。
 2. 桌面左侧为远程终端，右侧为部署任务；手机通过顶部页签切换。
 3. 在「模型设置」中填写 API Key（如 `sk-xxxx`）和模型，点「获取列表」可查询可用模型。设置只保存在内存中。
-4. 用自然语言描述部署任务，AI 会全自动执行，可用工具：`run_command`、`read_file`、`write_file`、`edit_file`、`append_file`、`finish`。单次任务最多 30 步；工具串行执行，每条命令默认超时 600 秒，最长 3600 秒。
+4. 用自然语言描述部署任务，AI 会全自动执行，可用工具：`run_command`、`read_file`、`write_file`、`edit_file`、`append_file`、`finish`。每次运行最多 40 步（`DP_MAX_STEPS` 可调）；工具串行执行，每条命令默认超时 600 秒，最长 3600 秒。
+5. 任务没有完成（步数用完、失败、停止，或模型在等你提供信息）时，输入框上方会出现「在此任务上继续」，默认勾选：输入补充说明后执行，模型保留之前的执行上下文继续，不必从头开始。只能继续最近结束的一个任务；上下文只保存在内存里，程序重启后不能继续。
 
 ### 工作台操作
 
@@ -102,6 +103,7 @@ Windows 下控制的是这台 Windows 机器本身，网页终端用的是 Power
 | `BAILU_MODEL` | 模型名 | `bailu-auto`（已验证支持流式输出和工具调用） |
 | `BAILU_BASE_URL` | OpenAI 兼容接口地址 | `https://bailucode.com/openapi/v1` |
 | `DP_CONTEXT_BYTES` | 每次模型请求 JSON 的字节预算，含消息和工具定义；允许 16384–2097152 | `131072`（128 KiB） |
+| `DP_MAX_STEPS` | 每次运行的模型轮次上限；允许 5–200，用完后可在该任务上继续 | `40` |
 | `NO_COLOR` | 关闭横幅颜色 | 空 |
 
 ## 隧道恢复
@@ -122,7 +124,7 @@ Windows 下控制的是这台 Windows 机器本身，网页终端用的是 Power
 - **退出**：Ctrl+C 吊销会话、关闭服务和隧道。
 - **API Key** 只保存在内存中，错误信息里会脱敏。通过 `BAILU_API_KEY` 提供时，读取后会立即从进程环境变量中移除，避免终端或 AI 执行 `env`/`printenv` 读到它。
 - **审计日志**：`~/.deploypilot/audit-<时间>.jsonl`。
-- **命令黑名单**：拦截 `rm -rf /`、`mkfs`、`dd` 写块设备、`wipefs`、`shred /dev/*`、fork bomb、`shutdown`/`reboot`/`poweroff`、`chmod -R 777 /`、`chown -R ... /` 等。黑名单只是兜底，不是沙箱。
+- **命令黑名单**：拦截 `rm -rf /`（含加引号的写法）、`mkfs`、`dd` 写块设备（含 `/dev/xvd*`）、`wipefs`、`shred /dev/*`、fork bomb、`shutdown`/`reboot`/`poweroff`、`chmod -R 777 /`、`chown -R ... /`；Windows 上拦截 `Format-Volume`、`Clear-Disk`、`diskpart`、`format C:`、递归删除盘符根目录或 Windows 目录、`Stop-Computer`/`Restart-Computer`、`bcdedit /delete`、`vssadmin delete shadows` 等。黑名单只检查 `run_command` 的命令文本，是兜底，不是沙箱。
 - 再次提醒：只在客户同意时运行，权限等同于启动它的用户。
 
 ## 开发与构建
@@ -185,6 +187,9 @@ scripts/install.sh     客户侧安装脚本
 ## 已知限制
 
 - Agent 的命令结果保留最多 16 KiB 的开头和末尾，并明确标注中间截断；上下文回收优先处理旧历史，尽量保留最近完整工具轮次。工具失败会返回错误及结束状态；普通文字回复不会自动算成功，最多提醒一次显式调用 `finish`。`finish` 仍是模型结论，不代替独立部署验收。
+- 模型回复中途断线时（本轮不会执行任何工具），会自动重新请求本轮，最多 2 次，界面上可能出现重复的文字；供应商返回“上下文超长”时，会收紧上下文预算并重试，最多 2 次。限流（429）会按供应商的 `Retry-After` 等待，最长 60 秒。
+- 开始任务前会探测系统、用户及是否有免密 sudo、CPU/内存、磁盘、GPU、CUDA、Python、Docker、systemd 和网络，作为模型的环境信息；这些探测以独立的只读进程运行，不出现在终端里。
+- `edit_file` 会修改符号链接指向的真实文件，并保留原文件的权限和属主；`read_file` 拒绝读取二进制文件，分页时不会切断多字节字符。
 - 上下文预算按请求 JSON 的字节计算，不是精确 token 数，也不能自动识别供应商的模型窗口。使用较小窗口的模型时应降低 `DP_CONTEXT_BYTES` 并给回复留出空间；原始任务本身超过预算会明确报错，不会静默删除目标。
 - trycloudflare 快速隧道适合临时接入，官方不提供在线时间保证，重建会改变网址；固定域名和生产接入应使用正式 Cloudflare Tunnel。不同地区和运营商的实际可达性需要实测。
 - 支持 Linux amd64 / arm64 和 Windows amd64。Windows 上的 AI 助手通过 PowerShell 执行命令，但内置的部署知识（apt、vLLM 等）面向 Linux，Windows 下的自动部署能力有限。
