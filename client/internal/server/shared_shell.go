@@ -54,9 +54,14 @@ func newSharedShell(dir string) (*sharedShell, error) {
 	cwd, _ := os.Getwd()
 	shell := &sharedShell{dir: dir, cwd: cwd, subscribers: make(map[chan []byte]struct{}), dead: make(chan struct{})}
 	var old terminalSnapshot
-	if data, err := os.ReadFile(filepath.Join(dir, "terminal.json")); err == nil {
+	termPath := filepath.Join(dir, "terminal.json")
+	if data, err := os.ReadFile(termPath); err == nil {
 		if err = json.Unmarshal(data, &old); err != nil {
-			return nil, fmt.Errorf("read terminal history: %w", err)
+			// Scrollback is ephemeral, not task history: keep the corrupt file
+			// aside for inspection but start with an empty terminal rather than
+			// leaving the whole session (terminal and agent) unavailable.
+			_ = os.Rename(termPath, termPath+".corrupt")
+			old = terminalSnapshot{}
 		}
 		if info, err := os.Stat(old.Cwd); err == nil && info.IsDir() {
 			shell.cwd = old.Cwd

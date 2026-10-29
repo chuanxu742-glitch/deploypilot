@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -175,7 +176,9 @@ func (s *Server) handleSession(w http.ResponseWriter, _ *http.Request) {
 // serving in a background goroutine. The chosen address is returned.
 func (s *Server) Start() (string, error) {
 	if s.historyErr != nil {
-		return "", s.historyErr
+		// Fail closed so a corrupt or stale history is never silently lost,
+		// but tell the operator exactly where it is and how to recover.
+		return "", fmt.Errorf("历史记录不可用：%w；如该目录已损坏或为上次运行的残留，删除或移走后重试：%s", s.historyErr, s.historyDir)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
