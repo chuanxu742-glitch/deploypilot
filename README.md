@@ -195,5 +195,7 @@ scripts/install.sh     客户侧安装脚本
 - `edit_file` 会修改符号链接指向的真实文件，并保留原文件的权限和属主；`read_file` 拒绝读取二进制文件，分页时不会切断多字节字符。
 - 上下文预算按请求 JSON 的字节计算，不是精确 token 数，也不能自动识别供应商的模型窗口。使用较小窗口的模型时应降低 `DP_CONTEXT_BYTES` 并给回复留出空间；原始任务本身超过预算会明确报错，不会静默删除目标。
 - trycloudflare 快速隧道适合临时接入，官方不提供在线时间保证，重建会改变网址；固定域名和生产接入应使用正式 Cloudflare Tunnel。不同地区和运营商的实际可达性需要实测。
-- 支持 Linux amd64 / arm64 和 Windows amd64。Windows 上的 AI 助手通过 PowerShell 执行命令，但内置的部署知识（apt、vLLM 等）面向 Linux，Windows 下的自动部署能力有限。
+- 支持 Linux amd64 / arm64 和 Windows 10 及以上（amd64）。Windows 7/8/8.1 无法运行：构建所用的 Go 1.21 起不再支持这些系统，安装脚本会直接提示。
+- 启动时会检测终端：Windows 经典控制台会主动开启颜色支持，开不了就输出纯文本；窗口窄于 51 列时显示单行标题；方块字符显示为双倍宽度时改用色块二维码；二维码比窗口宽或无法显示时只给出链接。
+- Windows 上的 AI 助手通过 PowerShell 执行命令，但内置的部署知识（apt、vLLM 等）面向 Linux，Windows 下的自动部署能力有限。
 - 命令黑名单只是安全兜底，不能替代沙箱或权限隔离。

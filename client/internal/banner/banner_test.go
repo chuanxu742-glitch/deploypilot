@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/deploypilot/deploypilot/internal/console"
 )
 
 func TestRenderPlain(t *testing.T) {
@@ -42,10 +44,42 @@ func TestRenderColor(t *testing.T) {
 	}
 }
 
-func TestDefaultOptionsNonTTY(t *testing.T) {
-	var buf bytes.Buffer
-	opts := DefaultOptions(&buf, "dev")
+func TestDefaultOptionsWithoutColorDisablesAnimation(t *testing.T) {
+	opts := DefaultOptions(console.Caps{Terminal: true, Width: 120}, "dev")
 	if opts.Color || opts.Animate {
-		t.Fatalf("non-tty writer must disable color and animation: %+v", opts)
+		t.Fatalf("a console without ANSI support must get plain, static output: %+v", opts)
+	}
+}
+
+func TestNarrowTerminalGetsOneLineTitle(t *testing.T) {
+	var buf bytes.Buffer
+	Render(&buf, Options{Width: 40, Version: "1.2.3"})
+	out := buf.String()
+	if strings.Contains(out, "|____/") {
+		t.Fatalf("a 40-column window must not get the wrapped ASCII logo: %q", out)
+	}
+	if !strings.Contains(out, "DeployPilot  "+Tagline) || !strings.Contains(out, "version 1.2.3") {
+		t.Fatalf("one-line title must keep name, tagline and version: %q", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		columns := 0
+		for _, r := range line {
+			if r >= 0x2E80 { // CJK characters take two columns
+				columns += 2
+			} else {
+				columns++
+			}
+		}
+		if columns > 40 {
+			t.Fatalf("line %q is %d columns, wider than 40", line, columns)
+		}
+	}
+}
+
+func TestWideTerminalGetsLogo(t *testing.T) {
+	var buf bytes.Buffer
+	Render(&buf, Options{Width: 80})
+	if !strings.Contains(buf.String(), "|____/") {
+		t.Fatalf("an 80-column window gets the ASCII logo: %q", buf.String())
 	}
 }

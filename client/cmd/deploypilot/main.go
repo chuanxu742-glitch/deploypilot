@@ -22,6 +22,7 @@ import (
 	"github.com/deploypilot/deploypilot/internal/agent"
 	"github.com/deploypilot/deploypilot/internal/auth"
 	"github.com/deploypilot/deploypilot/internal/banner"
+	"github.com/deploypilot/deploypilot/internal/console"
 	"github.com/deploypilot/deploypilot/internal/llm"
 	"github.com/deploypilot/deploypilot/internal/server"
 	"github.com/deploypilot/deploypilot/internal/tunnel"
@@ -47,7 +48,9 @@ func run() (runErr error) {
 	if err != nil {
 		return err
 	}
-	banner.Render(os.Stdout, banner.DefaultOptions(os.Stdout, version))
+	caps, restoreConsole := console.Prepare(os.Stdout)
+	defer restoreConsole()
+	banner.Render(os.Stdout, banner.DefaultOptions(caps, version))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -109,7 +112,7 @@ func run() (runErr error) {
 	printLink := func(header, publicURL, token string) {
 		link := fmt.Sprintf("%s/#t=%s", publicURL, token)
 		fmt.Println(header)
-		tunnel.PrintQR(os.Stdout, link)
+		fmt.Print(qrBlock(caps, link))
 		fmt.Println("\n或直接打开链接：")
 		fmt.Println("  " + link)
 	}
@@ -154,6 +157,20 @@ func run() (runErr error) {
 		fmt.Println("\n正在关闭…")
 	}
 	return err
+}
+
+// qrBlock returns the pairing QR code drawn the way this terminal can show it,
+// or a note pointing at the link when it would be garbled or wrap.
+func qrBlock(caps console.Caps, link string) string {
+	mode := caps.QR()
+	if mode == console.QRNone {
+		return "（当前终端无法正确显示二维码。可改用 Windows Terminal 运行，或使用下方链接。）\n"
+	}
+	text, columns := tunnel.QR(link, mode == console.QRHalfBlocks)
+	if caps.Width > 0 && columns > caps.Width {
+		return fmt.Sprintf("（窗口宽度 %d 列，二维码需要 %d 列，显示会错乱。请把窗口拉宽后重启，或使用下方链接。）\n", caps.Width, columns)
+	}
+	return text
 }
 
 func contextBudget(value string) (int, error) {

@@ -22,6 +22,12 @@ $ErrorActionPreference = 'Stop'
 $repo = if ($env:DP_REPO) { $env:DP_REPO } else { 'chuanxu742-glitch/deploypilot' }
 $version = if ($env:DP_VERSION) { $env:DP_VERSION } else { 'latest' }
 
+# Go 1.21+ binaries need Windows 10 / Server 2016 or later; fail clearly
+# instead of downloading a program that cannot start.
+if ([Environment]::OSVersion.Version.Major -lt 10) {
+    throw "DeployPilot needs Windows 10 or later (this is Windows $([Environment]::OSVersion.Version))."
+}
+
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     'AMD64' { 'amd64' }
     'ARM64' { 'amd64' }  # run the amd64 build under emulation until arm64 is published

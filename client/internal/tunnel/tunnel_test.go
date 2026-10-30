@@ -116,10 +116,28 @@ func TestDownloadRejectsBadChecksum(t *testing.T) {
 }
 
 func TestPrintQR(t *testing.T) {
-	var buf bytes.Buffer
-	PrintQR(&buf, "https://test.trycloudflare.com/#t=abc")
-	if buf.Len() == 0 {
-		t.Fatal("expected QR output")
+	link := "https://abc-def-ghi.trycloudflare.com/#t=0123456789abcdef0123456789abcdef"
+	half, halfColumns := QR(link, true)
+	cells, cellColumns := QR(link, false)
+	if !strings.ContainsAny(half, "▀▄█") || strings.Contains(half, "\x1b[") {
+		t.Fatalf("half-block QR uses block characters without escapes: %q", half[:80])
+	}
+	if strings.ContainsAny(cells, "▀▄█") || !strings.Contains(cells, "\x1b[40m  ") {
+		t.Fatalf("colour-cell QR uses only spaces with ANSI backgrounds: %q", cells[:80])
+	}
+	// Measured in a real conhost window: this link gives 39 columns.
+	if halfColumns != 39 {
+		t.Fatalf("half-block QR is %d columns, want 39", halfColumns)
+	}
+	// Two columns per module plus a wider quiet zone.
+	if cellColumns != 2*(halfColumns-2+4) {
+		t.Fatalf("colour-cell QR is %d columns, want %d", cellColumns, 2*(halfColumns-2+4))
+	}
+	// Every colour-cell row has the same width, so it stays square.
+	for _, row := range strings.Split(strings.TrimRight(cells, "\n"), "\n") {
+		if got := strings.Count(row, " "); got != cellColumns {
+			t.Fatalf("row is %d columns, want %d", got, cellColumns)
+		}
 	}
 }
 

@@ -4,9 +4,10 @@ package banner
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
+
+	"github.com/deploypilot/deploypilot/internal/console"
 )
 
 // Logo is the ASCII art shown on startup.
@@ -32,69 +33,59 @@ type Options struct {
 	LineDelay time.Duration
 	// Version is printed in the footer.
 	Version string
+	// Width is the terminal width in columns; 0 means unknown. A window
+	// narrower than the logo gets a one-line title instead of wrapped art.
+	Width int
 }
 
 // gradient is a set of ANSI 256-color codes used top-to-bottom.
 var gradient = []int{39, 38, 44, 43, 49, 48}
 
-// DefaultOptions derives options from the given writer and environment.
-// Color and animation are disabled when the output is not a TTY or when
-// NO_COLOR is set.
-func DefaultOptions(w io.Writer, version string) Options {
-	tty := isTerminal(w) && os.Getenv("NO_COLOR") == ""
+// DefaultOptions derives options from the terminal's capabilities: colour and
+// animation only where ANSI sequences are interpreted.
+func DefaultOptions(caps console.Caps, version string) Options {
 	return Options{
-		Color:     tty,
-		Animate:   tty,
+		Color:     caps.Color,
+		Animate:   caps.Color,
 		LineDelay: 45 * time.Millisecond,
 		Version:   version,
+		Width:     caps.Width,
 	}
 }
 
 // Render writes the banner to w according to opts.
 func Render(w io.Writer, opts Options) {
 	lines := strings.Split(strings.Trim(Logo, "\n"), "\n")
-	for i, line := range lines {
-		if opts.Color {
-			code := gradient[i%len(gradient)]
-			fmt.Fprintf(w, "\x1b[38;5;%dm%s\x1b[0m\n", code, line)
-		} else {
-			fmt.Fprintln(w, line)
-		}
-		if opts.Animate && opts.LineDelay > 0 {
-			time.Sleep(opts.LineDelay)
-		}
-	}
-
-	tagline := Tagline
-	footer := Tagline
-	_ = footer
-	if opts.Color {
-		fmt.Fprintf(w, "\x1b[1;36m%s\x1b[0m\n", tagline)
+	if opts.Width > 0 && opts.Width < logoWidth(lines) {
+		writeStyled(w, opts.Color, "1;36", "DeployPilot  "+Tagline)
 	} else {
-		fmt.Fprintln(w, tagline)
-	}
-
-	if opts.Version != "" {
-		ver := "version " + opts.Version
-		if opts.Color {
-			fmt.Fprintf(w, "\x1b[2m%s\x1b[0m\n", ver)
-		} else {
-			fmt.Fprintln(w, ver)
+		for i, line := range lines {
+			writeStyled(w, opts.Color, fmt.Sprintf("38;5;%d", gradient[i%len(gradient)]), line)
+			if opts.Animate && opts.LineDelay > 0 {
+				time.Sleep(opts.LineDelay)
+			}
 		}
+		writeStyled(w, opts.Color, "1;36", Tagline)
+	}
+	if opts.Version != "" {
+		writeStyled(w, opts.Color, "2", "version "+opts.Version)
 	}
 	fmt.Fprintln(w)
 }
 
-// isTerminal reports whether w is a terminal (an *os.File backed by a
-// character device).
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
+// writeStyled prints one line, wrapped in the SGR style when color is on.
+func writeStyled(w io.Writer, color bool, style, text string) {
+	if color {
+		fmt.Fprintf(w, "\x1b[%sm%s\x1b[0m\n", style, text)
+	} else {
+		fmt.Fprintln(w, text)
 	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
+}
+
+func logoWidth(lines []string) int {
+	width := 0
+	for _, line := range lines {
+		width = max(width, len(line))
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return width
 }
