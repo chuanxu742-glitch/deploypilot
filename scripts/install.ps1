@@ -1,5 +1,8 @@
 # DeployPilot installer for Windows (PowerShell).
 #
+# Keep this file ASCII-only: irm downloads it without a charset, and Windows
+# PowerShell 5.1 then decodes it as Latin-1, garbling any non-ASCII text.
+#
 # Usage (run in PowerShell):
 #   irm https://github.com/chuanxu742-glitch/deploypilot/releases/latest/download/install.ps1 | iex
 #
@@ -61,29 +64,29 @@ function Get-File($url, $dest) {
     }
 }
 
-Write-Host "==> 下载 $asset ($version) ..." -ForegroundColor Cyan
+Write-Host "==> Downloading $asset ($version) ..." -ForegroundColor Cyan
 $ok = $false
 foreach ($base in $sources) {
     if ((Get-File "$base/$asset" "$tmp\$asset") -and (Get-File "$base/checksums.txt" "$tmp\checksums.txt")) {
         $ok = $true
         break
     }
-    Write-Host "    下载源不可用，尝试下一个 ..." -ForegroundColor DarkYellow
+    Write-Host "    Source unavailable or too slow, trying the next one ..." -ForegroundColor DarkYellow
 }
-if (-not $ok) { Remove-Item -Recurse -Force $tmp; throw '所有下载源都失败了，请检查网络后重试' }
+if (-not $ok) { Remove-Item -Recurse -Force $tmp; throw 'All download sources failed; check the network and retry.' }
 
 $want = (Get-Content "$tmp\checksums.txt" | ForEach-Object { $_ -replace "`r", '' } |
     Where-Object { $_ -match "\s\*?$([regex]::Escape($asset))$" } |
     ForEach-Object { ($_ -split '\s+')[0] }) | Select-Object -First 1
-if (-not $want) { Remove-Item -Recurse -Force $tmp; throw "校验和文件中找不到 $asset" }
+if (-not $want) { Remove-Item -Recurse -Force $tmp; throw "checksums.txt has no entry for $asset" }
 
 $got = (Get-FileHash "$tmp\$asset" -Algorithm SHA256).Hash.ToLower()
-if ($got -ne $want.ToLower()) { Remove-Item -Recurse -Force $tmp; throw "校验和不匹配 (期望 $want, 实际 $got)" }
-Write-Host '==> 校验通过。' -ForegroundColor Cyan
+if ($got -ne $want.ToLower()) { Remove-Item -Recurse -Force $tmp; throw "Checksum mismatch (expected $want, got $got)" }
+Write-Host '==> Checksum verified.' -ForegroundColor Cyan
 
 $bin = Join-Path $dir 'deploypilot.exe'
 Copy-Item "$tmp\$asset" $bin -Force
 Remove-Item -Recurse -Force $tmp
 
-Write-Host '==> 启动 DeployPilot ...' -ForegroundColor Cyan
+Write-Host '==> Starting DeployPilot ...' -ForegroundColor Cyan
 & $bin
