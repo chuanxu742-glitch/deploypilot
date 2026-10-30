@@ -614,24 +614,18 @@ export function AgentPanel({
     >
       <header className="panel-head">
         <div className="panel-title">
+          <Icon name="spark" size={16} />
           <h2 id="agent-title" title={heroEmpty ? "" : headerTitle}>{headerTitle}</h2>
         </div>
         <div className="panel-meta">
-          <span className="status-chip">
-            <span className="dot" data-tone={phaseTone[phase]} />
-            <span role="status">{label}</span>
-          </span>
-          {tasks.length > 0 && <select className="task-history-select" aria-label="任务历史" value={record?.id ?? ""} disabled={busy} onChange={(event) => void selectTask(event.target.value)}><option value="">任务历史</option>{tasks.map((item) => <option key={item.id} value={item.id}>{item.title} | {new Date(item.startedAt).toLocaleString()}</option>)}</select>}
-          {seconds > 0 && (
-            <span className="meta-extra">{formatDuration(seconds)}</span>
-          )}
+          {/* The native select stays the accessible control; the visible face is a compact button. */}
+          {tasks.length > 0 && <span className="history-control" data-disabled={busy}><Icon name="history" size={16} /><span className="history-label">历史</span><select className="task-history-select" aria-label="任务历史" value={record?.id ?? ""} disabled={busy} onChange={(event) => void selectTask(event.target.value)}><option value="">任务历史</option>{tasks.map((item) => <option key={item.id} value={item.id}>{item.title} | {new Date(item.startedAt).toLocaleString()}</option>)}</select></span>}
           {!busy && !heroEmpty && (
-            <button className="button ghost" onClick={newTask}>
-              <Icon name="plus" size={14} />
+            <button className="button ghost new-task" onClick={newTask}>
+              <Icon name="plus" size={16} />
               新建任务
             </button>
           )}
-          {busy && <button className="button danger stop-compact" aria-label={phase === "stopping" ? "正在停止…" : "停止任务"} onClick={stop} disabled={phase === "stopping" || connectionState !== "connected"}><Icon name="stop" size={14} />{phase === "stopping" ? "正在停止" : "停止"}</button>}
         </div>
       </header>
       <div className="agent-main" hidden={empty}>
@@ -692,6 +686,16 @@ export function AgentPanel({
       {/* Keep one composer mounted across task states so focus and settings survive. */}
       <div className={heroEmpty ? "dock hero" : "dock"}>
         {heroEmpty && <h3>开始部署</h3>}
+        <div className="run-status" data-quiet={heroEmpty && phase === "idle" && label === phaseLabels.idle}>
+          <span className="status-chip">
+            <span className="dot" data-tone={phaseTone[phase]} />
+            <span role="status">{label}</span>
+          </span>
+          {seconds > 0 && (
+            <span className="meta-extra">{formatDuration(seconds)}</span>
+          )}
+          {busy && <button className="button danger stop-compact" aria-label={phase === "stopping" ? "正在停止…" : "停止任务"} onClick={stop} disabled={phase === "stopping" || connectionState !== "connected"}><Icon name="stop" size={14} />{phase === "stopping" ? "正在停止" : "停止"}</button>}
+        </div>
         {composer}
         {heroEmpty && (
               <div className="examples" aria-label="示例任务">
@@ -812,6 +816,7 @@ function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
         <summary className="action-head" onClick={(event) => { event.preventDefault(); setExpanded(!open); }}>
           <Icon name={toolIcons[tool] ?? "terminal"} size={16} />
           <span className="action-label">{toolLabels[tool] ?? (tool || "命令输出")}</span>
+          {target && !open && <code className="action-preview">{target}</code>}
           <span className="chip" data-tone={state.tone}>{state.label}</span>
           {item.done?.durationMs !== undefined && <span className="action-duration">{item.done.durationMs} ms</span>}
           <Icon name="chevron" size={14} />

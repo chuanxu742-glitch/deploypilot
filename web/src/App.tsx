@@ -81,7 +81,7 @@ export function App() {
     if (!bounds) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     const style = getComputedStyle(workspaceRef.current!);
-    const usableWidth = bounds.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 8;
+    const usableWidth = bounds.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 12;
     const update = (clientX: number) => setSplit(clampSplitRatio((clientX - bounds.left - parseFloat(style.paddingLeft)) / usableWidth, usableWidth));
     update(event.clientX);
     const move = (moveEvent: PointerEvent) => update(moveEvent.clientX);
