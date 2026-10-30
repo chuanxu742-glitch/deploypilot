@@ -597,6 +597,94 @@ const { spawn } = require("node:child_process");
       assert.equal(await input.isVisible(), true);
       await context.close();
     });
+    test("wait_for activity refreshes its card and keeps condition output expandable", async () => {
+      const { page, context, s } = await setup([]);
+      const taskId = "wait-task";
+      const callId = "wait-call";
+      const current = record(taskId, "running", [
+        { id: 1, taskId, type: "user", text: "等待服务就绪" },
+        {
+          id: 2,
+          taskId,
+          type: "tool_call",
+          tool: "wait_for",
+          callId,
+          step: 1,
+        },
+        {
+          id: 3,
+          taskId,
+          type: "activity",
+          state: "waiting",
+          tool: "wait_for",
+          callId,
+          text: "等待 HTTP 服务，已等待 5 秒",
+        },
+      ]);
+      s.current = current;
+      s.records.unshift(current);
+      s.state = "running";
+      s.snapshot();
+      await page
+        .locator(".action-progress")
+        .getByText("等待 HTTP 服务，已等待 5 秒", { exact: true })
+        .waitFor();
+      await page
+        .locator(".run-status [role=status]")
+        .getByText("等待 HTTP 服务，已等待 5 秒", { exact: true })
+        .waitFor();
+
+      const socket = s.sockets.at(-1);
+      socket.send(
+        JSON.stringify({
+          id: 4,
+          taskId,
+          type: "activity",
+          state: "waiting",
+          tool: "wait_for",
+          callId,
+          text: "等待 HTTP 服务，已等待 10 秒；最近观察：连接被拒绝",
+        }),
+      );
+      await page
+        .locator(".action-progress")
+        .getByText("已等待 10 秒；最近观察：连接被拒绝", { exact: false })
+        .waitFor();
+      assert.equal(await page.locator(".action-progress").count(), 1);
+      assert.match(
+        await page.locator(".run-status [role=status]").innerText(),
+        /已等待 10 秒/,
+      );
+
+      socket.send(
+        JSON.stringify({
+          id: 5,
+          taskId,
+          type: "output",
+          callId,
+          text: "HTTP 200，条件已满足",
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          id: 6,
+          taskId,
+          type: "tool_done",
+          callId,
+          exitCode: 0,
+          durationMs: 10000,
+        }),
+      );
+      const action = page.locator(".action").first();
+      await action.locator(".chip").filter({ hasText: "退出码 0" }).waitFor();
+      await action.locator("summary").click();
+      await action.locator(".action-output pre").waitFor({ state: "visible" });
+      assert.match(
+        await action.locator(".action-output pre").innerText(),
+        /HTTP 200，条件已满足/,
+      );
+      await context.close();
+    });
     let failures = 0;
     for (const [name, fn] of tests) {
       try {

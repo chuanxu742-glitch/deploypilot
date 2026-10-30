@@ -97,7 +97,7 @@ type Options struct {
 	LLM *llm.Client
 	// AgentContextBytes bounds each model request; zero uses the agent default.
 	AgentContextBytes int
-	// AgentMaxSteps is the model-turn budget per run; zero uses the default.
+	// AgentMaxSteps caps model turns per run; zero means no cap.
 	AgentMaxSteps  int
 	HistoryDir     string
 	LegacyAuditDir string

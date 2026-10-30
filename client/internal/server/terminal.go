@@ -60,7 +60,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1011, "terminal unavailable"), time.Now().Add(time.Second))
 		return
 	}
-	history, output, unsubscribeOutput := sess.Subscribe()
+	history, feed, unsubscribeOutput := sess.Subscribe()
 	defer unsubscribeOutput()
 	updates, unsubscribe := s.subscribeTerminalAgent()
 	defer unsubscribe()
@@ -68,13 +68,21 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return conn.WriteMessage(kind, data)
 	}
-	if err := write(websocket.TextMessage, []byte(`{"type":"terminal_reset"}`)); err != nil {
-		return
-	}
-	for _, chunk := range history {
-		if err := write(websocket.BinaryMessage, chunk); err != nil {
-			return
+	// redraw clears the browser terminal and replays chunks, on connect and
+	// again whenever this viewer falls behind live output.
+	redraw := func(chunks [][]byte) error {
+		if err := write(websocket.TextMessage, []byte(`{"type":"terminal_reset"}`)); err != nil {
+			return err
 		}
+		for _, chunk := range chunks {
+			if err := write(websocket.BinaryMessage, chunk); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if redraw(history) != nil {
+		return
 	}
 	done := make(chan struct{})
 	writerDone := make(chan struct{})
@@ -87,8 +95,12 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 				return
 			case <-sess.dead:
 				return
-			case data, ok := <-output:
+			case data, ok := <-feed.output:
 				if !ok || !touch() || write(websocket.BinaryMessage, data) != nil {
+					return
+				}
+			case <-feed.lagged:
+				if !touch() || redraw(sess.Resync(feed)) != nil {
 					return
 				}
 			case data, ok := <-updates:

@@ -82,6 +82,16 @@ export function mergeEvent(
       { ...last, text: clip((last.text ?? "") + (event.text ?? "")) },
     ].slice(-MAX_EVENTS);
   }
+  if (
+    event.type === "activity" &&
+    event.state === "waiting" &&
+    last?.type === "activity" &&
+    last.state === "waiting" &&
+    last.callId === event.callId &&
+    last.taskId === event.taskId
+  ) {
+    return [...previous.slice(0, -1), bounded].slice(-MAX_EVENTS);
+  }
   return [...previous, bounded].slice(-MAX_EVENTS);
 }
 
@@ -90,6 +100,7 @@ export interface ActionItem {
   key: number;
   call?: AgentEvent;
   output?: string;
+  progress?: string;
   done?: AgentEvent;
   error?: string;
 }
@@ -114,6 +125,25 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
     const event = events[index];
     const key = event.id ?? index;
     if (event.type === "activity") {
+      if (
+        event.state === "waiting" &&
+        event.tool === "wait_for" &&
+        event.callId
+      ) {
+        const action = [...items]
+          .reverse()
+          .find(
+            (item): item is ActionItem =>
+              item.kind === "action" &&
+              item.call?.tool === "wait_for" &&
+              item.call.callId === event.callId &&
+              (event.taskId === undefined ||
+                item.call.taskId === undefined ||
+                item.call.taskId === event.taskId),
+          );
+        if (action && !action.done && action.error === undefined)
+          action.progress = event.text ?? "";
+      }
       for (let i = items.length - 1; i >= 0; i--) {
         if (items[i].kind === "activity") items.splice(i, 1);
       }

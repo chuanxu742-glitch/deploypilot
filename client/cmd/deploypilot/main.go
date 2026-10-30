@@ -184,13 +184,15 @@ func contextBudget(value string) (int, error) {
 	return n, nil
 }
 
+// stepBudget reads DP_MAX_STEPS. Unset or 0 means no cap (the default, as in
+// pi and oh-my-pi); a cap, when wanted, must allow at least 5 turns.
 func stepBudget(value string) (int, error) {
 	if value == "" {
-		return agent.DefaultMaxSteps, nil
+		return 0, nil
 	}
 	n, err := strconv.Atoi(value)
-	if err != nil || n < 5 || n > 200 {
-		return 0, fmt.Errorf("DP_MAX_STEPS must be an integer from 5 to 200")
+	if err != nil || n < 0 || (n > 0 && n < 5) {
+		return 0, fmt.Errorf("DP_MAX_STEPS must be 0 (no limit) or an integer of at least 5")
 	}
 	return n, nil
 }

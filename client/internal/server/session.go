@@ -10,6 +10,7 @@ import (
 
 // guardSession closes an expired/revoked socket even when no input arrives.
 // Only actual input or task output calls touch; ping/pong traffic does not.
+// A running task separately holds its owner's session against idle expiry.
 // closeSessionExpired sends a distinct application close code before closing,
 // so the browser can tell an expired/revoked session apart from a transient
 // network drop and prompt the operator to pair again instead of retrying

@@ -75,7 +75,20 @@ type shellExecutor struct{}
 // NewShellExecutor returns the default host executor.
 func NewShellExecutor() Executor { return shellExecutor{} }
 
-func (shellExecutor) Run(ctx context.Context, command string, timeout time.Duration, onOutput func(string)) (int, string, error) {
+func (shellExecutor) Run(ctx context.Context, command string, timeout time.Duration, onOutput func(string)) (exitCode int, output string, runErr error) {
+	commandLog, err := NewCommandLog()
+	if err != nil {
+		return -1, "", err
+	}
+	defer func() {
+		if err := commandLog.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("save full command output to %s: %w", commandLog.Path(), err))
+		}
+		if output != "" {
+			output += "\n"
+		}
+		output += CommandLogReference(commandLog.Path())
+	}()
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
@@ -88,22 +101,22 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 
 	var buf cappedBuffer
 	buf.limit = maxCapturedOutput
-	w := &streamWriter{onOutput: onOutput, sink: &buf}
+	w := &streamWriter{onOutput: onOutput, sink: &buf, log: commandLog}
 	cmd.Stdout = w
 	cmd.Stderr = w
 
-	err := runCommand(cmd)
+	runErr = runCommand(cmd)
 	// A successful launcher may leave its output pipe inherited by a service.
 	// WaitDelay closes that pipe; it does not turn exit status 0 into a failure.
-	detached := errors.Is(err, exec.ErrWaitDelay) && runCtx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success()
+	detached := errors.Is(runErr, exec.ErrWaitDelay) && runCtx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success()
 	if detached {
-		err = nil
+		runErr = nil
 	}
 	exit := 0
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+	if runErr != nil {
+		if ee, ok := runErr.(*exec.ExitError); ok {
 			exit = ee.ExitCode()
-			err = nil
+			runErr = nil
 		} else {
 			exit = -1
 		}
@@ -114,11 +127,11 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 	if ctx.Err() != nil {
 		return -1, buf.String(), fmt.Errorf("command cancelled: %w", ctx.Err())
 	}
-	output := buf.String()
+	output = buf.String()
 	if detached {
 		output += "\n[command exited successfully; background output detached; inspect service logs for subsequent output]"
 	}
-	return exit, output, err
+	return exit, output, runErr
 }
 
 func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, error) {
@@ -183,7 +196,21 @@ func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, 
 
 func (shellExecutor) WriteFile(path, content string) error {
 	if dir := parentDir(path); dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		info, statErr := os.Stat(real)
+		if statErr != nil {
+			return statErr
+		}
+		if _, err := backupExisting(real, info); err != nil {
+			return err
+		}
+		path = real
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
 }
@@ -233,6 +260,9 @@ func (shellExecutor) EditFile(path, oldStr, newStr string, replaceAll bool) (int
 	} else {
 		content = strings.Replace(content, oldStr, newStr, 1)
 		count = 1
+	}
+	if _, err := backupExisting(real, info); err != nil {
+		return 0, err
 	}
 	// Atomic replace: write a uniquely named temp file beside the real file,
 	// copy its mode and owner, then rename over it.
@@ -401,9 +431,13 @@ func (c *cappedBuffer) String() string {
 type streamWriter struct {
 	onOutput func(string)
 	sink     *cappedBuffer
+	log      *CommandLog
 }
 
 func (w *streamWriter) Write(p []byte) (int, error) {
+	if _, err := w.log.Write(p); err != nil {
+		return 0, err
+	}
 	if w.onOutput != nil {
 		w.onOutput(string(p))
 	}

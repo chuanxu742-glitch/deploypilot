@@ -12,6 +12,7 @@ const toolLabels: Record<string, string> = {
   write_file: "写入文件",
   edit_file: "修改文件",
   append_file: "追加文件",
+  wait_for: "等待条件",
   finish: "结束任务",
 };
 const toolIcons: Record<string, IconName> = {
@@ -20,6 +21,7 @@ const toolIcons: Record<string, IconName> = {
   write_file: "edit",
   edit_file: "edit",
   append_file: "edit",
+  wait_for: "activity",
 };
 
 /** An operator message: the original task or a follow-up in the same session. */
@@ -147,6 +149,11 @@ function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
             </div>
           )}
           {target && <code className="action-target">{target}</code>}
+          {live && !item.done && item.error === undefined && item.progress && (
+            <div className="action-evidence action-progress" role="status">
+              {item.progress}
+            </div>
+          )}
           {output && (
             <div className="action-output">
               <pre ref={outputRef}>{output}</pre>

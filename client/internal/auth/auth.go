@@ -8,7 +8,9 @@
 //   - Pairing exchanges the token for an opaque session id delivered as an
 //     HttpOnly, Secure, SameSite=Strict cookie.
 //   - Only one session may be active at a time; a session expires after an
-//     idle timeout. Any authenticated activity refreshes the deadline.
+//     idle timeout. A running task holds its owning session until cleanup;
+//     explicit revocation remains effective. Otherwise authenticated activity
+//     refreshes the deadline.
 package auth
 
 import (
@@ -45,6 +47,8 @@ type Manager struct {
 	tokenUsed    bool
 	sessionID    string
 	sessionSeen  time.Time
+	sessionHolds int
+	sessionEpoch uint64
 	sessionEnded func()
 }
 
@@ -134,7 +138,45 @@ func (m *Manager) Pair(token string) (string, error) {
 	}
 	m.sessionID = sid
 	m.sessionSeen = now
+	m.sessionHolds = 0
+	m.sessionEpoch++
 	return sid, nil
+}
+
+// HoldSession prevents an otherwise-idle active session from expiring while
+// background work is running. The returned release function is idempotent;
+// releasing the final hold starts a fresh idle timeout. A hold cannot revive
+// an expired or revoked session.
+func (m *Manager) HoldSession(sid string) (release func(), ok bool) {
+	m.mu.Lock()
+	now := m.now()
+	if sid == "" || m.sessionID == "" || subtle.ConstantTimeCompare([]byte(sid), []byte(m.sessionID)) != 1 {
+		m.mu.Unlock()
+		return nil, false
+	}
+	if m.sessionIdleExpiredLocked(now) {
+		m.expireSessionLocked()
+		m.mu.Unlock()
+		return nil, false
+	}
+	m.sessionHolds++
+	epoch := m.sessionEpoch
+	m.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if m.sessionEpoch != epoch || subtle.ConstantTimeCompare([]byte(sid), []byte(m.sessionID)) != 1 || m.sessionHolds == 0 {
+				return
+			}
+			m.sessionHolds--
+			if m.sessionHolds == 0 {
+				m.sessionSeen = m.now()
+			}
+		})
+	}, true
 }
 
 // Validate reports whether sid is the active, non-expired session. On
@@ -160,12 +202,7 @@ func (m *Manager) validate(sid string, touch bool) bool {
 		return false
 	}
 	if m.sessionIdleExpiredLocked(now) {
-		m.sessionID = ""
-		// Edge-triggered: the cleared sessionID means later calls return early
-		// above, so the hook fires exactly once per expiry. Run it off the lock.
-		if m.sessionEnded != nil {
-			go m.sessionEnded()
-		}
+		m.expireSessionLocked()
 		return false
 	}
 	if touch {
@@ -178,14 +215,14 @@ func (m *Manager) validate(sid string, touch bool) bool {
 func (m *Manager) Revoke() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessionID = ""
+	m.clearSessionLocked()
 }
 
 // RevokeAll also invalidates unused pairing links while the tunnel is down.
 func (m *Manager) RevokeAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessionID = ""
+	m.clearSessionLocked()
 	m.token = ""
 	m.tokenUsed = true
 }
@@ -195,14 +232,29 @@ func (m *Manager) RevokeAll() {
 func (m *Manager) ResetPairing() (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessionID = ""
+	m.clearSessionLocked()
 	m.token = ""
 	m.tokenUsed = true
 	return m.mintToken()
 }
 
 func (m *Manager) sessionIdleExpiredLocked(now time.Time) bool {
-	return now.Sub(m.sessionSeen) > m.idleTimeout
+	return m.sessionHolds == 0 && now.Sub(m.sessionSeen) > m.idleTimeout
+}
+
+func (m *Manager) clearSessionLocked() {
+	m.sessionID = ""
+	m.sessionHolds = 0
+	m.sessionEpoch++
+}
+
+func (m *Manager) expireSessionLocked() {
+	m.clearSessionLocked()
+	// Edge-triggered: the cleared sessionID means later calls return early
+	// above, so the hook fires exactly once per expiry. Run it off the lock.
+	if m.sessionEnded != nil {
+		go m.sessionEnded()
+	}
 }
 
 // SetCookie uses a browser-session cookie. The server owns the sliding idle

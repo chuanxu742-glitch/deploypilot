@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadFilePaging(t *testing.T) {
@@ -88,6 +91,90 @@ func TestEditFileNotFound(t *testing.T) {
 	os.WriteFile(p, []byte("hello"), 0o644)
 	if _, err := ex.EditFile(p, "nope", "y", false); err == nil {
 		t.Fatal("missing old_string must error")
+	}
+}
+
+func TestWriteAndEditFileCreatePermissionPreservingBackups(t *testing.T) {
+	ex := NewShellExecutor()
+	p := filepath.Join(t.TempDir(), "config.txt")
+	if err := os.WriteFile(p, []byte("old value"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.WriteFile(p, "written value"); err != nil {
+		t.Fatal(err)
+	}
+	backups, err := filepath.Glob(p + ".bak-*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("WriteFile backups: %v %v", backups, err)
+	}
+	if data, err := os.ReadFile(backups[0]); err != nil || string(data) != "old value" {
+		t.Fatalf("WriteFile backup content: %q %v", data, err)
+	}
+	backupInfo, err := os.Stat(backups[0])
+	if err != nil || backupInfo.Mode().Perm() != originalInfo.Mode().Perm() {
+		t.Fatalf("backup mode %v, original %v, error %v", backupInfo.Mode().Perm(), originalInfo.Mode().Perm(), err)
+	}
+	if _, err := ex.EditFile(p, "written", "edited", false); err != nil {
+		t.Fatal(err)
+	}
+	backups, err = filepath.Glob(p + ".bak-*")
+	if err != nil || len(backups) != 2 {
+		t.Fatalf("EditFile backups: %v %v", backups, err)
+	}
+	found := false
+	for _, path := range backups {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil && string(data) == "written value" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("EditFile did not preserve the pre-edit content")
+	}
+	newFile := filepath.Join(filepath.Dir(p), "new.txt")
+	if err := ex.WriteFile(newFile, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if backups, _ := filepath.Glob(newFile + ".bak-*"); len(backups) != 0 {
+		t.Fatalf("new file unexpectedly got backups: %v", backups)
+	}
+}
+
+func TestShellExecutorLogsFullOutput(t *testing.T) {
+	command := "printf START; printf '%020000d' 0; printf MIDDLE_MARKER; printf '%020000d' 0; printf 'END\\n'"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output ('START' + ('x' * 20000) + 'MIDDLE_MARKER' + ('y' * 20000) + 'END')"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, output, err := NewShellExecutor().Run(ctx, command, 30*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = "[full output: "
+	start := strings.LastIndex(output, prefix)
+	if start < 0 || !strings.HasSuffix(output, "]") {
+		t.Fatalf("output lacks log reference: %q", output[len(output)-min(len(output), 200):])
+	}
+	path := strings.TrimSuffix(output[start+len(prefix):], "]")
+	t.Cleanup(func() { _ = os.Remove(path) })
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read full output %s: %v", path, err)
+	}
+	if len(data) < 40000 || !strings.Contains(string(data), "START") || !strings.Contains(string(data), "MIDDLE_MARKER") || !strings.Contains(string(data), "END") {
+		t.Fatalf("full output log %s lacks the complete long command output", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("log permissions: mode=%v err=%v", info.Mode().Perm(), err)
 	}
 }
 

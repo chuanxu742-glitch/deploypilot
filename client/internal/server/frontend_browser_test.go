@@ -50,7 +50,7 @@ func TestFrontendBrowserIntegration(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		args, _ := json.Marshal(`{"summary":"本地联调完成","success":true}`)
+		args, _ := json.Marshal(`{"summary":"本地联调完成","success":false}`)
 		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"本地模型回复\",\"tool_calls\":[{\"index\":0,\"id\":\"browser-%d\",\"type\":\"function\",\"function\":{\"name\":\"finish\",\"arguments\":%s}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n", n, args)
 	}))
 	defer provider.Close()

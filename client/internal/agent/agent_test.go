@@ -76,7 +76,7 @@ func scriptedLLM(t *testing.T, responses []string) *httptest.Server {
 		mu.Unlock()
 		if idx >= len(responses) {
 			t.Errorf("unexpected extra LLM call #%d", idx)
-			w.WriteHeader(500)
+			w.WriteHeader(400)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -108,7 +108,7 @@ func collectEvents() (func(Event), *[]Event, *sync.Mutex) {
 func TestAgentRunsCommandThenFinishes(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		toolCallSSE("c1", "run_command", `{"command":"echo hello"}`),
-		toolCallSSE("c2", "finish", `{"summary":"done","success":true}`),
+		toolCallSSE("c2", "finish", `{"summary":"done","success":true,"verification_call_ids":["c1"]}`),
 	})
 	defer srv.Close()
 
@@ -206,6 +206,37 @@ func TestAgentMaxSteps(t *testing.T) {
 	}
 }
 
+// Without a configured cap a long task keeps going past the old 40-turn
+// default and ends when the model calls finish.
+func TestAgentHasNoStepLimitByDefault(t *testing.T) {
+	responses := make([]string, 0, 61)
+	for i := 0; i < 60; i++ {
+		responses = append(responses, toolCallSSE(fmt.Sprintf("c%d", i), "run_command", fmt.Sprintf(`{"command":"echo step %d"}`, i)))
+	}
+	responses = append(responses, toolCallSSE("done", "finish", `{"summary":"deployed","success":true,"verification_call_ids":["c59"]}`))
+	srv := scriptedLLM(t, responses)
+	defer srv.Close()
+
+	fe := newFakeExec()
+	emit, events, mu := collectEvents()
+	a := New(Config{
+		LLM:      llm.New(llm.Config{BaseURL: srv.URL, APIKey: "k", Model: "m"}),
+		Executor: fe,
+		Emit:     emit,
+	})
+	if err := a.Run(context.Background(), "long deployment"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(fe.commands) != 60 {
+		t.Fatalf("expected 60 commands, got %d", len(fe.commands))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if last := (*events)[len(*events)-1]; last.Type != EventFinal || !last.Success {
+		t.Fatalf("expected successful final, got %+v", last)
+	}
+}
+
 func TestAgentStopViaContext(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		toolCallSSE("c1", "run_command", `{"command":"sleep"}`),
@@ -232,7 +263,8 @@ func TestAgentReadWriteFile(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		toolCallSSE("c1", "write_file", `{"path":"/tmp/x.conf","content":"hello"}`),
 		toolCallSSE("c2", "read_file", `{"path":"/tmp/x.conf"}`),
-		toolCallSSE("c3", "finish", `{"summary":"all set","success":true}`),
+		toolCallSSE("check", "run_command", `{"command":"test -f /tmp/x.conf"}`),
+		toolCallSSE("c3", "finish", `{"summary":"all set","success":true,"verification_call_ids":["check"]}`),
 	})
 	defer srv.Close()
 
@@ -258,7 +290,7 @@ func TestAgentReadWriteFile(t *testing.T) {
 func TestAgentNudgesOnEmptyReply(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		textSSE(""),
-		toolCallSSE("c1", "finish", `{"summary":"ok summary","success":true}`),
+		toolCallSSE("c1", "finish", `{"summary":"ok summary","success":false}`),
 	})
 	defer srv.Close()
 

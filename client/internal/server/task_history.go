@@ -232,8 +232,15 @@ func (s *Server) appendEventLocked(task *taskRecord, event agent.Event) agent.Ev
 	// fragments cannot crowd tool calls out of the bounded history. Live
 	// viewers still receive every delta below.
 	merged := false
+	if n := len(task.Events); n > 0 && event.Type == agent.EventActivity && event.State == "waiting" && event.CallID != "" {
+		last := &task.Events[n-1]
+		if last.Type == agent.EventActivity && last.State == "waiting" && last.CallID == event.CallID {
+			task.Events[n-1] = event
+			merged = true
+		}
+	}
 	if n := len(task.Events); n > 0 && (event.Type == agent.EventThinking || event.Type == agent.EventOutput) {
-		if last := &task.Events[n-1]; last.Type == event.Type && last.CallID == event.CallID {
+		if last := &task.Events[n-1]; !merged && last.Type == event.Type && last.CallID == event.CallID {
 			last.Text = keepTailUTF8(last.Text+event.Text, maxStoredEventText)
 			merged = true
 		}
@@ -304,7 +311,16 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	if s.historyErr != nil {
 		return "历史记录不可写，请先检查本机存储：" + s.historyErr.Error()
 	}
+	releaseSession := func() {}
+	if s.auth != nil && owner != "" {
+		var ok bool
+		releaseSession, ok = s.auth.HoldSession(owner)
+		if !ok {
+			return "会话已失效，请重新配对。"
+		}
+	}
 	if !s.acquireAgent() {
+		releaseSession()
 		return "已有任务在运行或清理，请稍后重试。"
 	}
 	var task *taskRecord
@@ -314,6 +330,7 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 		var err error
 		if task, err = s.reopenTaskLocked(continueFrom); err != nil {
 			s.releaseAgent()
+			releaseSession()
 			return "无法继续：任务记录读取失败：" + err.Error()
 		}
 		s.appendEventLocked(task, agent.Event{Type: agent.EventUser, Text: text})
@@ -321,6 +338,7 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 		token := make([]byte, 16)
 		if _, err := rand.Read(token); err != nil {
 			s.releaseAgent()
+			releaseSession()
 			return err.Error()
 		}
 		task = &taskRecord{ID: hex.EncodeToString(token), Title: text, StartedAt: time.Now().UnixMilli(), Phase: "running", Events: []agent.Event{}}
@@ -365,6 +383,7 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 		task.Phase = "interrupted"
 		task.EndedAt = time.Now().UnixMilli()
 		s.releaseAgent()
+		releaseSession()
 		return "任务未启动，历史记录保存失败：" + s.historyErr.Error()
 	}
 	s.broadcastTaskLocked(s.snapshotLocked())
@@ -372,8 +391,9 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	s.taskWG.Add(1)
 	go func() {
 		defer s.taskWG.Done()
+		defer releaseSession()
 		auditor := s.newAuditor()
-		ag := agent.New(agent.Config{LLM: s.llm.Snapshot(), Executor: s.newExecutor(), Auditor: auditor, ContextBytes: s.agentContextBytes, MaxSteps: s.agentMaxSteps, Resume: resume, Emit: func(e agent.Event) { s.publishTerminalAgent(e); s.emitTask(task, e) }})
+		ag := agent.New(agent.Config{LLM: s.llm.Snapshot(), Executor: s.newExecutor(), Auditor: auditor, ContextBytes: s.agentContextBytes, MaxSteps: s.agentMaxSteps, Resume: resume, Emit: func(e agent.Event) { s.emitTask(task, e) }})
 		_ = ag.Run(ctx, text)
 		_ = auditor.Close()
 		s.taskMu.Lock()

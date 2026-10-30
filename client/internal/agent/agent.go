@@ -73,6 +73,7 @@ type Config struct {
 	LLM      *llm.Client
 	Executor Executor
 	Auditor  Auditor
+	// MaxSteps caps model turns per run; zero or less means no cap.
 	MaxSteps int
 	// ContextBytes bounds the serialized model request, including tools. Zero
 	// selects the default; this is a byte budget, not a tokenizer estimate.
@@ -85,8 +86,8 @@ type Config struct {
 }
 
 // Conversation is the model-visible state of a finished run. It can seed a
-// later run so the operator can continue a task (e.g. after the step budget
-// ran out, or to supply information the model asked for).
+// later run so the operator can continue a task (e.g. after a stop, an
+// optional step cap, or to supply information the model asked for).
 type Conversation struct {
 	window *contextWindow
 }
@@ -101,11 +102,8 @@ type Agent struct {
 	emit         func(Event)
 	resume       *Conversation
 	window       *contextWindow
+	verification map[string]verificationRecord
 }
-
-// DefaultMaxSteps is the model-turn budget per run. A run that uses it up can
-// be continued, so this bounds cost per run rather than the whole task.
-const DefaultMaxSteps = 40
 
 // Turn-level retry limits. Interrupted streams executed no tools, and an
 // overflowing request can be compacted further, so both are safe to repeat.
@@ -130,9 +128,6 @@ func (a *Agent) Conversation() *Conversation {
 
 // New creates an Agent, applying defaults.
 func New(cfg Config) *Agent {
-	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = DefaultMaxSteps
-	}
 	if cfg.ContextBytes <= 0 {
 		cfg.ContextBytes = DefaultContextBytes
 	}
@@ -195,7 +190,10 @@ func (a *Agent) streamTurn(ctx context.Context, step int, window *contextWindow,
 			a.audit.Append(AuditEntry{Kind: "context_compaction", Note: fmt.Sprintf("request_bytes=%d budget=%d", requestBytes(req), *budget)})
 		}
 		a.emit(Event{Type: EventActivity, State: "generating", Text: "等待模型响应", Step: step})
-		res, err := a.llm.StreamChat(ctx, req, func(delta string) {
+		requestCtx := llm.WithRetryWait(ctx, func(attempt int, delay time.Duration) {
+			a.emit(Event{Type: EventStatus, Step: step, Text: fmt.Sprintf("模型接口暂不可用，等待 %s 后重试（第 %d 次）。", delay.Round(time.Second), attempt)})
+		})
+		res, err := a.llm.StreamChat(requestCtx, req, func(delta string) {
 			a.emit(Event{Type: EventThinking, Text: delta})
 		})
 		if err == nil {
@@ -225,8 +223,8 @@ func (a *Agent) streamTurn(ctx context.Context, step int, window *contextWindow,
 	}
 }
 
-// Run executes the task loop until the model finishes, the step budget is
-// exhausted, or ctx is cancelled.
+// Run executes the task loop until the model finishes, an optional step cap is
+// reached, or ctx is cancelled.
 func (a *Agent) Run(ctx context.Context, task string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -247,11 +245,15 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 		})
 	}
 	a.window = window
+	a.verification = nil
 	tools := toolSet()
 	budget := a.contextBytes
 	nudged := false
+	var repetition repetitionGuard
 
-	for step := 1; step <= a.maxSteps; step++ {
+	// Like pi and oh-my-pi, a run has no turn cap by default: it ends when the
+	// model calls finish, stops twice without it, fails, or the operator stops it.
+	for step := 1; a.maxSteps <= 0 || step <= a.maxSteps; step++ {
 		select {
 		case <-ctx.Done():
 			a.emit(Event{Type: EventStatus, Text: "已停止。"})
@@ -296,15 +298,34 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 		// Record the turn whatever happens below, with every call answered, so
 		// the conversation stays valid if the operator continues it later.
 		finished := false
+		repeated := false
 		for _, tc := range res.Message.ToolCalls {
 			if ctx.Err() != nil || finished {
 				break
 			}
 			done, toolMsg := a.runTool(ctx, step, tc)
+			if !done {
+				warn, stop := repetition.observe(tc, toolMsg)
+				if warn {
+					warning := "同一工具、参数和结果已连续出现 3 次。请换一种方法或检查新的证据；继续重复将暂停任务。"
+					a.emit(Event{Type: EventStatus, Step: step, Text: warning})
+					toolMsg.Content += "\n[重复保护] " + warning
+				}
+				repeated = stop
+			}
 			turn = append(turn, toolMsg)
 			finished = done
+			if repeated {
+				break
+			}
 		}
 		window.turns = append(window.turns, completeTurn(turn))
+		if repeated {
+			message := "相同调用与结果连续重复 4 次，任务已暂停。请检查记录后继续，或补充新的信息。"
+			a.emit(Event{Type: EventFinal, Text: message, Success: false, Step: step})
+			a.audit.Append(AuditEntry{Kind: "repeat_guard", Note: message})
+			return fmt.Errorf("task paused after repeated identical tool results")
+		}
 		if finished {
 			return nil
 		}
@@ -344,6 +365,9 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		a.emit(e)
 	}
 	result := func(content string) llm.Message {
+		if name == toolRunCommand || name == toolWaitFor {
+			content += "\n[call_id: " + tc.ID + "]"
+		}
 		return llm.Message{Role: llm.RoleTool, ToolCallID: tc.ID, Name: name, Content: content}
 	}
 	failure := func(content string) llm.Message {
@@ -388,6 +412,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			return false, failure(err.Error())
 		}
 		timeout := time.Duration(args.TimeoutSeconds) * time.Second
+		a.verification = nil
 		exit, out, err := a.exec.Run(ctx, args.Command, timeout, func(chunk string) {
 			emit(Event{Type: EventOutput, Text: chunk})
 		})
@@ -399,7 +424,30 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		if exit != 0 {
 			return false, failure(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out))
 		}
+		a.rememberVerification(tc.ID, args.Command, fmt.Sprintf("exit=%d\n%s", exit, out))
 		return false, result(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out))
+
+	case toolWaitFor:
+		var args waitForArgs
+		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		command := args.Kind + ": " + args.Target
+		if args.Kind == "log" {
+			command += " contains: " + args.Contains
+		}
+		if err := announce(Event{Type: EventToolCall, Tool: name, Command: command}); err != nil {
+			return false, failure(err.Error())
+		}
+		out, err := waitFor(ctx, a.exec, args, func(elapsed time.Duration, observation string) {
+			emit(Event{Type: EventActivity, State: "waiting", Tool: name, Text: waitForActivityText(args, elapsed, observation)})
+		})
+		a.audit.Append(AuditEntry{Kind: "wait_for", Note: args.Kind + ": " + args.Target, Output: out})
+		if err != nil {
+			return false, failure(err.Error())
+		}
+		emit(Event{Type: EventOutput, Text: out})
+		emit(Event{Type: EventToolDone, Tool: name, Success: true})
+		a.rememberVerification(tc.ID, "wait_for "+args.Kind+" "+args.Target, out)
+		return false, result(out)
 
 	case toolReadFile:
 		var args readFileArgs
@@ -429,6 +477,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path, Step: step}); err != nil {
 			return false, failure(err.Error())
 		}
+		a.verification = nil
 		err := a.exec.WriteFile(args.Path, args.Content)
 		a.audit.Append(AuditEntry{Kind: "write_file", Path: args.Path, Output: fmt.Sprintf("%d bytes", len(args.Content))})
 		if err != nil {
@@ -445,6 +494,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path, Step: step}); err != nil {
 			return false, failure(err.Error())
 		}
+		a.verification = nil
 		count, err := a.exec.EditFile(args.Path, args.OldString, args.NewString, args.ReplaceAll)
 		a.audit.Append(AuditEntry{Kind: "edit_file", Path: args.Path, Output: fmt.Sprintf("%d replacement(s)", count)})
 		if err != nil {
@@ -461,6 +511,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path, Step: step}); err != nil {
 			return false, failure(err.Error())
 		}
+		a.verification = nil
 		err := a.exec.AppendFile(args.Path, args.Content)
 		a.audit.Append(AuditEntry{Kind: "append_file", Path: args.Path, Output: fmt.Sprintf("%d bytes", len(args.Content))})
 		if err != nil {
@@ -472,8 +523,17 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 	case toolFinish:
 		var args finishArgs
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-		emit(Event{Type: EventFinal, Text: args.Summary, Success: args.Success})
-		a.audit.Append(AuditEntry{Kind: "final", Note: args.Summary})
+		summary := args.Summary
+		if args.Success {
+			evidence, err := a.finishEvidence(args.VerificationCallIDs)
+			if err != nil {
+				emit(Event{Type: EventToolCall, Tool: name})
+				return false, failure(err.Error())
+			}
+			summary += "\n\n实际验证记录：\n" + evidence
+		}
+		emit(Event{Type: EventFinal, Text: summary, Success: args.Success})
+		a.audit.Append(AuditEntry{Kind: "final", Note: summary})
 		return true, result("acknowledged")
 
 	default:
@@ -494,11 +554,14 @@ var systemPrompt = strings.TrimSpace(`
 - 每一步说明你要做什么、为什么这么做，再调用工具。
 - 遇到报错先读取日志和错误输出，定位根因后再修复，不要盲目重试。
 - 任务完成或无法继续时，调用 finish 给出清晰的总结（成果、如何验证、后续注意事项）。
+- 成功完成前执行真实检查（服务接口、健康状态、预期文件等），finish(success=true) 的 verification_call_ids 必须引用 run_command 或 wait_for 返回的 call_id。新的命令或文件修改会使旧验证失效；请把最终检查放在最后。不能只填写一段声称成功的文字。
+- 同一调用连续得到相同结果时换方法，优先读完整日志；不要重复运行无变化的命令。第三次会收到提醒，第四次任务会暂停。
 
 文件操作:
 - read_file 只用来读文本文件（配置、日志、脚本）。它会返回文件总大小和 next offset；文件很大时用 offset 分段续读。
 - 绝对不要用 read_file 读模型权重等二进制大文件（.safetensors/.gguf/.bin）。模型只需要用 run_command 下载、用 ls -lh/du -sh 确认大小、把路径传给 vLLM/Ollama 加载，从不需要读取其内容。
 - 大日志用 run_command 配合 grep/tail/sed 抓关键行，不要整文件读。
+- 命令结果末尾的 full output 路径保存完整输出，中间报错被截短时到该文件搜索。write_file/edit_file 覆盖已有文件前会保存同目录 .bak-* 备份。
 - 改已有文件用 edit_file（按唯一片段替换），新建或整体重写用 write_file，往末尾追加用 append_file。文件超大时用 run_command 的 sed/awk 修改。
 
 安全:
@@ -511,6 +574,7 @@ var systemPrompt = strings.TrimSpace(`
 - 长期运行的服务（vLLM、Ollama、Web 服务等）不要放在前台运行，否则命令会一直等到超时并被中断、服务随之被杀。用 nohup <命令> > /tmp/<名称>.log 2>&1 & 在后台启动（能用 systemd 或 docker -d 更好），再用 sleep、tail 日志和 curl 轮询确认就绪。Windows 用 Start-Process 并重定向日志。
 - 预计较慢的命令（大模型下载、pip 安装大包、构建镜像）设置 timeout_seconds（最长 3600），或改为后台执行后轮询进度。
 - 非零退出码不一定是故障：grep 没匹配、which/test 未找到都会返回 1，根据输出判断。
+- 等待网址可访问、日志出现某句话或进程退出时用 wait_for，一次调用在程序内等待，不要反复 sleep/curl 占用模型轮次。
 - 需要操作员提供的信息（密码、令牌、要选择的版本等）无法自行获得时，调用 finish（success=false），在 summary 里写清需要什么。操作员可以在该任务上继续执行并补充信息，已有进展会保留。
 
 部署知识:

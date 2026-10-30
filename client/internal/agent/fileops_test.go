@@ -44,8 +44,13 @@ func TestEditFileLeavesNoTempFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 {
+	if len(entries) != 2 {
 		t.Fatalf("temp files left behind: %v", entries)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "app.env" && !strings.HasPrefix(entry.Name(), "app.env.bak-") {
+			t.Fatalf("unexpected temporary file: %s", entry.Name())
+		}
 	}
 }
 

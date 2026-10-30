@@ -2,9 +2,11 @@ const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { mkdirSync } = require("node:fs");
 (async () => {
   const root = path.resolve(__dirname, "../..");
   process.chdir(root);
+  mkdirSync(path.join(root, ".probe-tmp/ui-screenshots"), { recursive: true });
   const preview = spawn(
     process.execPath,
     [
@@ -516,9 +518,7 @@ const { spawn } = require("node:child_process");
       "hovered primary button text must remain visible in night mode",
     );
     await page.screenshot({
-      path: path.resolve(
-        "docs/changes/ui-task-experience/night-button-hover.png",
-      ),
+      path: path.resolve(".probe-tmp/ui-screenshots/night-button-hover.png"),
     });
     await page.locator("#task-input").fill("");
     await page.mouse.move(0, 0);
@@ -535,7 +535,7 @@ const { spawn } = require("node:child_process");
       "theme changes preserve terminal socket",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/night.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/night.png"),
     });
     await selectTheme("comfort");
     await checkContrast();
@@ -552,7 +552,7 @@ const { spawn } = require("node:child_process");
       "comfort",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/comfort.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/comfort.png"),
     });
     await selectTheme("day");
     await page.reload();
@@ -657,7 +657,7 @@ const { spawn } = require("node:child_process");
     };
     await auditStyles();
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/desktop.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/desktop.png"),
     });
     assert.equal(
       await page.locator("#terminal-panel").isVisible(),
@@ -672,7 +672,7 @@ const { spawn } = require("node:child_process");
       "terminal must stay left of tasks",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/workspace-split.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/workspace-split.png"),
     });
     assert.equal(
       terminalConnections,
@@ -686,7 +686,7 @@ const { spawn } = require("node:child_process");
     await page.locator(".model-button").click();
     await auditStyles();
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/settings.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/settings.png"),
     });
     assert.equal(await page.getByLabel("模型名称").inputValue(), "bailu-auto");
     await page.getByRole("button", { name: "获取列表" }).click();
@@ -697,7 +697,7 @@ const { spawn } = require("node:child_process");
       "opening the model menu must expose all fetched models",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/model-list.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/model-list.png"),
     });
     await page.getByRole("option", { name: longModel, exact: true }).click();
     assert.equal(await page.getByLabel("模型名称").inputValue(), longModel);
@@ -835,7 +835,7 @@ const { spawn } = require("node:child_process");
     await page.getByPlaceholder("补充当前任务").press("Control+Enter");
     assert.equal(starts, 1, "drafting during a run cannot start another task");
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/task-running.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/task-running.png"),
     });
     for (let i = 0; i < 45; i++)
       sendTaskEvent({
@@ -904,9 +904,7 @@ const { spawn } = require("node:child_process");
       ),
     );
     await page.screenshot({
-      path: path.resolve(
-        "docs/changes/ui-task-experience/task-running-mobile.png",
-      ),
+      path: path.resolve(".probe-tmp/ui-screenshots/task-running-mobile.png"),
     });
     const startsBeforeReconnect = starts;
     const connectionsBeforeReconnect = agentConnections;
@@ -946,12 +944,8 @@ const { spawn } = require("node:child_process");
     );
     const connectionsBeforeTerminalReconnect = terminalConnections;
     const resetsBeforeTerminalReconnect = terminalResets;
+    // The terminal reconnects on its own after a dropped connection.
     terminalSocket.close();
-    await page
-      .locator("#terminal-panel [role=status]")
-      .getByText("已断开", { exact: true })
-      .waitFor();
-    await page.getByRole("button", { name: "重新连接", exact: true }).click();
     for (
       let attempt = 0;
       attempt < 80 &&
@@ -961,7 +955,7 @@ const { spawn } = require("node:child_process");
       await page.waitForTimeout(50);
     assert.ok(
       terminalConnections > connectionsBeforeTerminalReconnect,
-      "terminal can reconnect to the shared PTY",
+      "terminal reconnects to the shared PTY without a click",
     );
     for (
       let attempt = 0;
@@ -1078,7 +1072,7 @@ const { spawn } = require("node:child_process");
     await page.getByRole("heading", { name: "开始部署" }).waitFor();
     await auditStyles();
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/mobile.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/mobile.png"),
     });
     await page.locator(".model-button").click();
     assert.equal(await page.getByRole("dialog").isVisible(), true);
@@ -1111,7 +1105,7 @@ const { spawn } = require("node:child_process");
     await page.getByRole("option", { name: longModel, exact: true }).click();
     assert.equal(await page.getByLabel("模型名称").inputValue(), longModel);
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/model-mobile.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/model-mobile.png"),
     });
     await page.keyboard.press("Escape");
     for (const viewport of [

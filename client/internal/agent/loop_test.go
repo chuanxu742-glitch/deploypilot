@@ -35,7 +35,7 @@ func newRecordingLLM(t *testing.T, responses ...func(w http.ResponseWriter)) *re
 		r.mu.Unlock()
 		if idx >= len(r.responses) {
 			t.Errorf("unexpected extra model call #%d", idx)
-			w.WriteHeader(500)
+			w.WriteHeader(400)
 			return
 		}
 		r.responses[idx](w)
@@ -65,7 +65,7 @@ func TestInterruptedTurnIsRetriedWithoutRunningTools(t *testing.T) {
 	model := newRecordingLLM(t,
 		reply(droppedStream),
 		reply(toolCallSSE("c1", toolRunCommand, `{"command":"echo once"}`)),
-		reply(toolCallSSE("c2", toolFinish, `{"summary":"done","success":true}`)),
+		reply(toolCallSSE("c2", toolFinish, `{"summary":"done","success":true,"verification_call_ids":["c1"]}`)),
 	)
 	fe := newFakeExec()
 	emit, events, _ := collectEvents()
@@ -108,7 +108,7 @@ func TestPersistentInterruptionStillFails(t *testing.T) {
 func TestContextOverflowShrinksBudgetAndRetries(t *testing.T) {
 	model := newRecordingLLM(t,
 		status(400, `{"error":{"message":"This model's maximum context length is 4096 tokens"}}`),
-		reply(toolCallSSE("c1", toolFinish, `{"summary":"done","success":true}`)),
+		reply(toolCallSSE("c1", toolFinish, `{"summary":"done","success":false}`)),
 	)
 	a := New(Config{LLM: llm.New(llm.Config{BaseURL: model.srv.URL, APIKey: "k"}), Executor: newFakeExec(), ContextBytes: 64 * 1024})
 	if err := a.Run(context.Background(), "deploy"); err != nil {
@@ -144,7 +144,9 @@ func TestContinueKeepsEarlierContextAndPairs(t *testing.T) {
 		t.Fatal("no conversation to continue")
 	}
 
-	second := newRecordingLLM(t, reply(toolCallSSE("c3", toolFinish, `{"summary":"vllm running","success":true}`)))
+	second := newRecordingLLM(t,
+		reply(toolCallSSE("health", toolRunCommand, `{"command":"curl --fail http://localhost:8001/health"}`)),
+		reply(toolCallSSE("c3", toolFinish, `{"summary":"vllm running","success":true,"verification_call_ids":["health"]}`)))
 	b := New(Config{LLM: llm.New(llm.Config{BaseURL: second.srv.URL, APIKey: "k"}), Executor: newFakeExec(), Resume: conv})
 	if err := b.Run(context.Background(), "继续，用 8001 端口"); err != nil {
 		t.Fatalf("continued run: %v", err)

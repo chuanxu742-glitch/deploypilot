@@ -133,3 +133,22 @@ func TestTaskHistoryDoesNotDeleteEarlierSessions(t *testing.T) {
 		t.Fatal("old history not readable", response.Body.String())
 	}
 }
+
+func TestWaitingActivityHistoryKeepsOnlyLatestProgressPerCall(t *testing.T) {
+	srv := newTestServer()
+	task := &taskRecord{ID: "waiting-progress", Events: []agent.Event{}}
+	first := srv.appendEventLocked(task, agent.Event{Type: agent.EventActivity, State: "waiting", CallID: "call-1", Text: "waiting 10 seconds"})
+	latest := srv.appendEventLocked(task, agent.Event{Type: agent.EventActivity, State: "waiting", CallID: "call-1", Text: "waiting 20 seconds"})
+	if len(task.Events) != 1 {
+		t.Fatalf("consecutive waiting updates stored %d events", len(task.Events))
+	}
+	if task.Events[0].Text != latest.Text || task.Events[0].ID != latest.ID || first.ID == latest.ID {
+		t.Fatalf("latest waiting event was not kept: %+v", task.Events[0])
+	}
+	srv.appendEventLocked(task, agent.Event{Type: agent.EventActivity, State: "executing", CallID: "call-1", Text: "running"})
+	srv.appendEventLocked(task, agent.Event{Type: agent.EventActivity, State: "waiting", CallID: "call-1", Text: "waiting again"})
+	if len(task.Events) != 3 {
+		t.Fatalf("non-consecutive waiting updates were merged: %+v", task.Events)
+	}
+	_ = srv.Shutdown(context.Background())
+}

@@ -122,6 +122,8 @@ export function Terminal({
     let disposed = false;
     let resizeFrame = 0;
     let connectTimer: ReturnType<typeof setTimeout>;
+    let retryTimer: ReturnType<typeof setTimeout>;
+    let retryDelay = 300;
     let clipboardTimer: ReturnType<typeof setTimeout>;
     const encoder = new TextEncoder();
     const clipboardFeedback = (message: string) => {
@@ -191,6 +193,7 @@ export function Terminal({
           return;
         }
         clearTimeout(connectTimer);
+        retryDelay = 300;
         setConnection("connected");
         sendResize();
       };
@@ -234,11 +237,24 @@ export function Terminal({
         agentStateRef.current = "unknown";
         setAgentState("unknown");
         term.options.disableStdin = true;
-        if (event.code === SESSION_EXPIRED_CODE) notifySessionExpired();
-        else void checkSessionAfterDisconnect();
+        if (event.code === SESSION_EXPIRED_CODE) {
+          notifySessionExpired();
+          return;
+        }
+        // The shell lives on the server, so reconnecting resumes the same session
+        // and replays its output. An expired session is detected by the probe and
+        // returns the app to pairing, which unmounts this component.
+        void checkSessionAfterDisconnect();
+        const delay = retryDelay;
+        retryDelay = Math.min(5_000, delay * 2);
+        retryTimer = setTimeout(connect, delay);
       };
     };
-    reconnectRef.current = connect;
+    reconnectRef.current = () => {
+      clearTimeout(retryTimer);
+      retryDelay = 300;
+      connect();
+    };
 
     const dataSubscription = term.onData((data) => {
       if (taskActiveRef.current || agentStateRef.current !== "idle") return;
@@ -260,6 +276,7 @@ export function Terminal({
     return () => {
       disposed = true;
       clearTimeout(connectTimer);
+      clearTimeout(retryTimer);
       clearTimeout(clipboardTimer);
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
@@ -307,7 +324,7 @@ export function Terminal({
                         ? "Agent 控制"
                         : "已连接"
                   : connection === "disconnected"
-                    ? "已断开"
+                    ? "已断开，正在重连"
                     : "连接中")}
             </span>
           </span>

@@ -25,11 +25,13 @@ const DefaultModel = "bailu-auto"
 
 // Client talks to an OpenAI-compatible chat API.
 type Client struct {
-	mu      sync.RWMutex
-	baseURL string
-	apiKey  string
-	model   string
-	http    *http.Client
+	mu                sync.RWMutex
+	baseURL           string
+	apiKey            string
+	model             string
+	http              *http.Client
+	streamIdleTimeout time.Duration
+	onRetryWait       func(attempt int, delay time.Duration)
 }
 
 // Config configures a Client.
@@ -39,7 +41,15 @@ type Config struct {
 	Model   string
 	// HTTPClient is optional; a sensible default is used when nil.
 	HTTPClient *http.Client
+	// StreamIdleTimeout limits the time without response-body data. Zero uses
+	// the 180-second default; this is not a total stream duration limit.
+	StreamIdleTimeout time.Duration
+	// OnRetryWait is called before each retry delay with the failed attempt
+	// number and effective wait (including Retry-After when longer).
+	OnRetryWait func(attempt int, delay time.Duration)
 }
+
+const defaultStreamIdleTimeout = 180 * time.Second
 
 // New creates a Client. BaseURL defaults to DefaultBaseURL.
 func New(cfg Config) *Client {
@@ -50,8 +60,8 @@ func New(cfg Config) *Client {
 	hc := cfg.HTTPClient
 	if hc == nil {
 		// No overall timeout: a long streaming completion must not be cut off
-		// mid-response. Bound only the time to the first response header, and
-		// inherit proxy settings from the environment via the default transport.
+		// mid-response. The transport bounds the first response header; doStream
+		// separately bounds response-body idle time. Inherit proxy settings.
 		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.ResponseHeaderTimeout = 60 * time.Second
 		hc = &http.Client{Transport: tr}
@@ -65,6 +75,13 @@ func New(cfg Config) *Client {
 		apiKey:  strings.TrimSpace(cfg.APIKey),
 		model:   model,
 		http:    hc,
+		streamIdleTimeout: func() time.Duration {
+			if cfg.StreamIdleTimeout <= 0 {
+				return defaultStreamIdleTimeout
+			}
+			return cfg.StreamIdleTimeout
+		}(),
+		onRetryWait: cfg.OnRetryWait,
 	}
 }
 
@@ -111,7 +128,7 @@ func (c *Client) HasKey() bool {
 func (c *Client) Snapshot() *Client {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return &Client{baseURL: c.baseURL, apiKey: c.apiKey, model: c.model, http: c.http}
+	return &Client{baseURL: c.baseURL, apiKey: c.apiKey, model: c.model, http: c.http, streamIdleTimeout: c.streamIdleTimeout, onRetryWait: c.onRetryWait}
 }
 
 // Redact removes the API key from a string so it is never leaked in logs.
@@ -136,8 +153,8 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
 		return nil, c.statusError(resp)
 	}
 	var mr modelsResponse
@@ -192,7 +209,9 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -208,11 +227,13 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	if resp.StatusCode != http.StatusOK {
 		return nil, c.statusError(resp)
 	}
+	idleBody := newIdleTimeoutBody(resp.Body, c.streamIdleTimeout, cancelStream)
+	defer idleBody.Close()
 
 	asm := newAssembler()
 	totalBytes := 0
 	sawDone := false
-	sc := bufio.NewScanner(resp.Body)
+	sc := bufio.NewScanner(idleBody)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		totalBytes += len(sc.Bytes())
@@ -249,6 +270,9 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 		if ch.FinishReason != "" {
 			asm.finishReason = ch.FinishReason
 		}
+	}
+	if idleBody.TimedOut() {
+		return nil, fmt.Errorf("%w: no response data for %s", ErrStreamInterrupted, c.streamIdleTimeout)
 	}
 	if err := sc.Err(); err != nil {
 		if ctx.Err() != nil {
@@ -339,7 +363,7 @@ func (e *apiError) Error() string {
 // retryable reports whether an error warrants a retry.
 func retryable(err error) bool {
 	var se *streamError
-	if errors.As(err, &se) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.As(err, &se) || errors.Is(err, ErrStreamInterrupted) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	var ae *apiError
@@ -351,17 +375,26 @@ func retryable(err error) bool {
 }
 
 // retryBaseDelay is the first backoff step; a variable so tests can shorten it.
-var retryBaseDelay = 500 * time.Millisecond
+var retryBaseDelay = 2 * time.Second
 
 // maxRetryAfter caps a provider-requested wait so a bad header cannot stall a
 // task indefinitely.
 const maxRetryAfter = 60 * time.Second
 
+type retryWaitContextKey struct{}
+
+// WithRetryWait returns a context whose callback observes each internal API
+// retry delay. A callback attached to the request context takes precedence
+// over the Client's Config.OnRetryWait callback.
+func WithRetryWait(ctx context.Context, callback func(attempt int, delay time.Duration)) context.Context {
+	return context.WithValue(ctx, retryWaitContextKey{}, callback)
+}
+
 // withRetry retries requests that failed before a response stream began.
-// Backoff is 0.5s, 1s, 2s, 4s, 8s (about 15s in total), or the provider's
-// Retry-After when it asks for longer, so a short rate limit can clear.
+// Delays grow exponentially from 2s to 60s (about three minutes at the limit),
+// or use the provider's Retry-After when it asks for longer.
 func (c *Client) withRetry(ctx context.Context, fn func() error) error {
-	const maxAttempts = 6
+	const maxAttempts = 8
 	delay := retryBaseDelay
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -374,12 +407,21 @@ func (c *Client) withRetry(ctx context.Context, fn func() error) error {
 		if errors.As(err, &ae) && ae.retryAfter > wait {
 			wait = min(ae.retryAfter, maxRetryAfter)
 		}
+		onWait := c.onRetryWait
+		if callback, ok := ctx.Value(retryWaitContextKey{}).(func(int, time.Duration)); ok && callback != nil {
+			onWait = callback
+		}
+		if onWait != nil {
+			onWait(attempt, wait)
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(wait):
+		case <-timer.C:
 		}
-		delay *= 2
+		delay = min(delay*2, maxRetryAfter)
 	}
 	return err
 }

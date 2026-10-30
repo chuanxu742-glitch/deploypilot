@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/deploypilot/deploypilot/internal/agent"
 	"github.com/deploypilot/deploypilot/internal/pty"
 )
 
@@ -79,10 +80,11 @@ type sharedShell struct {
 	cwd          string
 	chunks       [][]byte
 	bytes        int
-	subscribers  map[chan []byte]struct{}
+	subscribers  map[*shellFeed]struct{}
 	output       func(string)
 	marker       string
 	markerTail   string
+	displayTail  string
 	completed    chan struct{}
 	dead         chan struct{}
 	closeOnce    sync.Once
@@ -96,7 +98,7 @@ func newSharedShell(dir string) (*sharedShell, error) {
 		return nil, err
 	}
 	cwd, _ := os.Getwd()
-	shell := &sharedShell{dir: dir, cwd: cwd, subscribers: make(map[chan []byte]struct{}), dead: make(chan struct{})}
+	shell := &sharedShell{dir: dir, cwd: cwd, subscribers: make(map[*shellFeed]struct{}), dead: make(chan struct{})}
 	var old terminalSnapshot
 	termPath := filepath.Join(dir, "terminal.json")
 	if data, err := os.ReadFile(termPath); err == nil {
@@ -185,7 +187,13 @@ func (s *sharedShell) read() {
 				output(string(data))
 			}
 			s.mu.Lock()
-			s.keepLocked(data)
+			visible := data
+			if runtime.GOOS == "windows" && s.completed != nil {
+				visible = []byte(hideOutputMarker(&s.displayTail, string(data), s.marker))
+			}
+			if len(visible) > 0 {
+				s.keepLocked(visible)
+			}
 			if s.completed != nil {
 				s.markerTail += string(data)
 				if strings.Contains(s.markerTail, s.marker) {
@@ -196,13 +204,8 @@ func (s *sharedShell) read() {
 					s.markerTail = s.markerTail[len(s.markerTail)-4096:]
 				}
 			}
-			for ch := range s.subscribers {
-				select {
-				case ch <- data:
-				default:
-					delete(s.subscribers, ch)
-					close(ch)
-				}
+			if len(visible) > 0 {
+				s.fanOutLocked(visible)
 			}
 			if s.persistTimer == nil {
 				s.persistTimer = time.AfterFunc(250*time.Millisecond, func() { s.mu.Lock(); defer s.mu.Unlock(); s.persistLocked(); s.persistTimer = nil })
@@ -214,6 +217,37 @@ func (s *sharedShell) read() {
 		}
 	}
 }
+
+// Keep the internal nonce out of terminal history, including when a PTY read
+// splits it across chunks. At most one marker's prefix is held back.
+func hideOutputMarker(pending *string, chunk, marker string) string {
+	combined := strings.ReplaceAll(*pending+chunk, marker, "")
+	*pending = ""
+	for n := min(len(marker)-1, len(combined)); n > 0; n-- {
+		if strings.HasSuffix(combined, marker[:n]) {
+			*pending = combined[len(combined)-n:]
+			return combined[:len(combined)-n]
+		}
+	}
+	return combined
+}
+
+// fanOutLocked delivers new output to every viewer. A slow viewer is
+// resynchronised, not dropped: the shell and its history are intact, only
+// that browser fell behind.
+func (s *sharedShell) fanOutLocked(data []byte) {
+	for feed := range s.subscribers {
+		select {
+		case feed.output <- data:
+		default:
+			select {
+			case feed.lagged <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
 func (s *sharedShell) persistLocked() {
 	if data, err := os.ReadFile(s.readyPath); err == nil && len(data) > 0 {
 		s.cwd = string(data)
@@ -245,20 +279,54 @@ func atomicPrivateWrite(path string, data []byte) error {
 	}
 	return os.Rename(name, path)
 }
-func (s *sharedShell) Subscribe() ([][]byte, <-chan []byte, func()) {
+
+// shellFeed is one viewer's live output. When the viewer cannot keep up with a
+// burst (apt, pip or docker progress over a slow tunnel), output is dropped
+// and lagged is signalled; the viewer then calls Resync to redraw.
+type shellFeed struct {
+	output chan []byte
+	lagged chan struct{}
+}
+
+// resyncTailBytes bounds the redraw after lag, so a viewer that keeps falling
+// behind during sustained output is not sent the whole history every time.
+const resyncTailBytes = 512 * 1024
+
+func (s *sharedShell) Subscribe() ([][]byte, *shellFeed, func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	history := append([][]byte(nil), s.chunks...)
-	ch := make(chan []byte, 256)
-	s.subscribers[ch] = struct{}{}
-	return history, ch, func() {
+	feed := &shellFeed{output: make(chan []byte, 256), lagged: make(chan struct{}, 1)}
+	s.subscribers[feed] = struct{}{}
+	return history, feed, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if _, ok := s.subscribers[ch]; ok {
-			delete(s.subscribers, ch)
-			close(ch)
+		if _, ok := s.subscribers[feed]; ok {
+			delete(s.subscribers, feed)
+			close(feed.output)
 		}
 	}
+}
+
+// Resync discards the output queued for a lagging feed and returns the recent
+// history to redraw from. Both happen under the same lock that appends output,
+// so nothing is lost or repeated between the redraw and later live output.
+func (s *sharedShell) Resync(feed *shellFeed) [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for drained := false; !drained; {
+		select {
+		case <-feed.output:
+		default:
+			drained = true
+		}
+	}
+	start, size := len(s.chunks), 0
+	for start > 0 && size < resyncTailBytes {
+		start--
+		size += len(s.chunks[start])
+	}
+	return append([][]byte(nil), s.chunks[start:]...)
 }
 func (s *sharedShell) Write(data []byte) (int, error) {
 	s.inputMu.Lock()
@@ -294,9 +362,9 @@ func (s *sharedShell) Close() error {
 			s.persistTimer.Stop()
 		}
 		s.persistLocked()
-		for ch := range s.subscribers {
-			close(ch)
-			delete(s.subscribers, ch)
+		for feed := range s.subscribers {
+			close(feed.output)
+			delete(s.subscribers, feed)
 		}
 	})
 	return err
@@ -309,7 +377,7 @@ var terminalReply = regexp.MustCompile("^(?:\x1b\\[(?:[IO]|[?>=]?[0-9;]+[cRnt]))
 
 // Dot-source a temporary script in the existing shell. Completion is written to
 // a private side channel, so a command's ordinary stdout cannot spoof its exit status.
-func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(string)) (int, string, error) {
+func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(string)) (exitCode int, output string, runErr error) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.readyEnabled {
@@ -344,6 +412,12 @@ func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(str
 	defer os.Remove(resultPath)
 	defer os.Remove(scriptPath)
 	encoded := base64.StdEncoding.EncodeToString([]byte(command))
+	marker := "\x1b]777;" + id + "\x07"
+	if runtime.GOOS == "windows" {
+		// ConPTY consumes private OSC sequences. This nonce is printed only
+		// by the script; read strips it before forwarding terminal output.
+		marker = "DP_OUTPUT_DONE_" + id
+	}
 	var script, input string
 	if runtime.GOOS == "windows" {
 		scriptPath += ".ps1"
@@ -365,8 +439,9 @@ try {
 } catch { $%s.code=1; [void]$%s.output.Append($_.ToString()); Write-Output $_ } finally {
  [IO.File]::WriteAllText(%s,(@{code=$%s.code;cwd=(Get-Location).Path;output=$%s.output.ToString();truncated=$%s.truncated}|ConvertTo-Json -Compress))
  Remove-Variable %s -ErrorAction SilentlyContinue
+ [Console]::Write(%s)
 }
-`, code, encoded, code, code, code, code, code, code, code, code, code, psQuote(resultPath), code, code, code, code)
+`, code, encoded, code, code, code, code, code, code, code, code, code, psQuote(resultPath), code, code, code, code, psQuote(marker))
 		input = ". ([ScriptBlock]::Create([IO.File]::ReadAllText(" + psQuote(scriptPath) + ")))\r"
 		if s.readyEnabled {
 			label := strings.Map(func(r rune) rune {
@@ -391,21 +466,61 @@ try {
 	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
 		return -1, "", err
 	}
+	commandLog, err := agent.NewCommandLog()
+	if err != nil {
+		return -1, "", err
+	}
 	captured := &boundedOutput{halfLimit: 16 * 1024}
 	var captureMu sync.Mutex
+	logOutput := true
+	var logErr error
 	completed := make(chan struct{})
 	s.mu.Lock()
-	s.marker, s.markerTail, s.completed = "\x1b]777;"+id+"\x07", "", completed
+	s.marker, s.markerTail, s.completed = marker, "", completed
 	s.output = func(data string) {
 		captureMu.Lock()
 		defer captureMu.Unlock()
+		if logOutput {
+			if _, err := commandLog.Write([]byte(data)); err != nil && logErr == nil {
+				logErr = err
+			}
+		}
 		captured.WriteString(data)
 		if onOutput != nil && runtime.GOOS != "windows" {
 			onOutput(terminalEscapes.ReplaceAllString(data, ""))
 		}
 	}
 	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.output = nil; s.mu.Unlock() }()
+	capturedOutput := func() string {
+		captureMu.Lock()
+		defer captureMu.Unlock()
+		return terminalEscapes.ReplaceAllString(captured.String(), "")
+	}
+	defer func() {
+		s.mu.Lock()
+		s.output = nil
+		if s.displayTail != "" {
+			s.keepLocked([]byte(s.displayTail))
+			s.fanOutLocked([]byte(s.displayTail))
+			s.displayTail = ""
+		}
+		s.completed = nil
+		s.marker, s.markerTail = "", ""
+		s.mu.Unlock()
+		captureMu.Lock()
+		logOutput = false
+		if err := commandLog.Close(); err != nil && logErr == nil {
+			logErr = err
+		}
+		if output != "" {
+			output += "\n"
+		}
+		output += agent.CommandLogReference(commandLog.Path())
+		if logErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("save full command output to %s: %w", commandLog.Path(), logErr))
+		}
+		captureMu.Unlock()
+	}()
 	if _, err := s.Write([]byte(input)); err != nil {
 		return -1, "", err
 	}
@@ -428,14 +543,14 @@ try {
 			// If the shell does not acknowledge cancellation, close it rather than grant
 			// manual input while an unknown foreground program may still be running.
 			_ = s.session.Close()
-			return -1, "", fmt.Errorf("command cancelled; terminal session closed: %w", cancelled)
+			return -1, capturedOutput(), fmt.Errorf("command cancelled; terminal session closed: %w", cancelled)
 		case <-s.dead:
-			return -1, "", errors.New("terminal session ended while executing command")
+			return -1, capturedOutput(), errors.New("terminal session ended while executing command")
 		case <-completed:
 			outputComplete = true
 			completed = nil
 		case <-ticker.C:
-			if runtime.GOOS != "windows" && !outputComplete && cancelled == nil {
+			if !outputComplete && cancelled == nil {
 				continue
 			}
 			data, err := os.ReadFile(resultPath)
