@@ -25,6 +25,7 @@ type Tunnel struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 	done   chan struct{}
+	owner  io.Closer
 	mu     sync.Mutex
 	err    error
 }
@@ -55,17 +56,21 @@ func Start(ctx context.Context, binPath string, localPort int) (*Tunnel, error) 
 	cmd.Stdout, cmd.Stderr = logs, logs
 	cmd.WaitDelay = 2 * time.Second
 
-	if err := cmd.Start(); err != nil {
+	// Bind cloudflared's lifetime to this process: if DeployPilot is killed
+	// without a clean shutdown, the tunnel must not keep exposing the machine.
+	owner, err := startOwned(cmd)
+	if err != nil {
 		cancel()
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
 
-	t := &Tunnel{cmd: cmd, cancel: cancel, done: make(chan struct{})}
+	t := &Tunnel{cmd: cmd, cancel: cancel, done: make(chan struct{}), owner: owner}
 
 	go func() {
 		err := cmd.Wait()
 		cancel()
+		_ = owner.Close()
 		_ = os.RemoveAll(dir)
 		t.mu.Lock()
 		t.err = err
