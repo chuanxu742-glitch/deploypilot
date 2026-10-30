@@ -79,7 +79,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		case "stop":
 			s.stopTask()
 		case "start":
-			if reason := s.startTaskWithRequestID(msg.Task, owner.Value, msg.ContinueFrom, msg.RequestID); reason != "" {
+			if reason := s.startTask(msg.Task, owner.Value, msg.ContinueFrom, msg.RequestID); reason != "" {
 				rejection := map[string]any{"type": agent.EventError, "text": reason}
 				if msg.RequestID != "" {
 					rejection["requestId"] = msg.RequestID

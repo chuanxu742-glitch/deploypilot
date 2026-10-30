@@ -279,13 +279,10 @@ func (s *Server) reopenTaskLocked(id string) (*taskRecord, error) {
 	return nil, errors.New("task not found")
 }
 
-func (s *Server) startTask(text, owner, continueFrom string) string {
-	return s.startTaskWithRequestID(text, owner, continueFrom, "")
-}
-
-// startTaskWithRequestID records the latest client request on successful start;
-// startTask remains available to existing callers without a request ID.
-func (s *Server) startTaskWithRequestID(text, owner, continueFrom, requestID string) string {
+// startTask starts a task (or continues continueFrom) and returns a rejection
+// reason, or "" on success. A non-empty requestID is recorded on the task so a
+// reconnecting client can confirm its start was accepted.
+func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	if s.taskCancel != nil {
@@ -416,7 +413,7 @@ func (s *Server) stopTask() {
 }
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	// Marshal the response under taskMu (fast, in-memory) but write it to the

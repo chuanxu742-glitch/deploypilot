@@ -6,6 +6,7 @@ const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 const components = [
   "App",
   "Agent",
+  "Timeline",
   "Settings",
   "Terminal",
   "ModelPicker",

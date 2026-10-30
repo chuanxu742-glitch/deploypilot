@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-func TestParseTunnelURL(t *testing.T) {
+func TestTunnelURLPattern(t *testing.T) {
 	cases := map[string]string{
 		"2024-01-01 INF +----+ https://happy-cloud-1234.trycloudflare.com |": "https://happy-cloud-1234.trycloudflare.com",
 		"no url here":             "",
@@ -22,10 +23,15 @@ func TestParseTunnelURL(t *testing.T) {
 		"prefix https://a-b-c.trycloudflare.com suffix": "https://a-b-c.trycloudflare.com",
 	}
 	for in, want := range cases {
-		if got := ParseTunnelURL(in); got != want {
-			t.Errorf("ParseTunnelURL(%q) = %q, want %q", in, got, want)
+		if got := urlRe.FindString(in); got != want {
+			t.Errorf("urlRe.FindString(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// scanForURL drains r through the same capture the tunnel uses for cloudflared logs.
+func scanForURL(r io.Reader, out chan<- string) {
+	_, _ = io.Copy(&urlCapture{out: out}, r)
 }
 
 func TestScanForURL(t *testing.T) {

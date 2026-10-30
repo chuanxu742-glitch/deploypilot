@@ -24,7 +24,7 @@
 | 任务交互回归通过 | `node web/tests/task-interactions.browser.cjs` | 18/18。首次运行最后一项因预览服务器连接被拒（`ERR_CONNECTION_REFUSED`）失败，重跑通过。 |
 | 认证恢复与真实后台联调通过 | `node web/tests/auth-recovery.browser.cjs`、`node web/tests/run-real-backend.cjs` | 5/5；真实 Go HTTP/WS 与 Chrome 联调 `TestFrontendBrowserIntegration` 通过，模型与执行器为本地替身。 |
 | 分批提交的中间状态可用 | 在 Git 忽略的临时工作树中依次组装“续聊”“逻辑修复”“样式”三个状态，分别构建和测试 | 三个状态的构建与单测均通过（28、33、33）；逻辑修复状态另跑浏览器三套、真实后台、`go test ./...`、`go vet ./...`，均通过。 |
-| 改前改后对照 | 模拟数据截图脚本，夜间/日间/护眼/设置/手机 | 截图在 Git 忽略的 `.probe-tmp/ui-review-20261030/{before,after}/`。 |
+| 改前改后对照 | 模拟数据截图脚本，夜间/日间/护眼/设置/手机 | 主人看过后无意见。截图曾在 Git 忽略的 `.probe-tmp/ui-review-20261030/`，该临时目录随后被清空，现已不在；本目录的 PNG 是改版后的状态。 |
 | 运行中的安装版已包含本次样式 | 对比 `.probe-tmp/frontend-fixes/final-source-after.json` 与当前源码 SHA-256 | `index.css`、`Agent.tsx`、`App.tsx`、`Icon.tsx` 哈希一致；安装版 `v0.4.1-frontend-fixes` 由前端逻辑修复会话构建。 |
 
 ## 决定与缺口

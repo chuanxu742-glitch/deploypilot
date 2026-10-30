@@ -150,10 +150,6 @@ func (w *urlCapture) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func scanForURL(r io.Reader, out chan<- string) {
-	_, _ = io.Copy(&urlCapture{out: out}, r)
-}
-
 func (t *Tunnel) exitError() error {
 	if err := t.Err(); err != nil {
 		return fmt.Errorf("cloudflared exited: %w", err)

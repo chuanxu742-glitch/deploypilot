@@ -24,6 +24,51 @@ import type { ThemeName } from "./ui-preferences";
 
 export type TerminalConnection = "connecting" | "connected" | "disconnected";
 
+// The terminal is always dark: slate for day and night, warm sand for comfort.
+// ANSI colours are shared; only the neutral surface and text change.
+function terminalPalette(theme: ThemeName): ITheme {
+  const neutral =
+    theme === "comfort"
+      ? {
+          surface: sandDark.sand1,
+          raised: sandDark.sand2,
+          muted: sandDark.sand9,
+          soft: sandDark.sand11,
+          text: sandDark.sand12,
+        }
+      : {
+          surface: slateDark.slate1,
+          raised: slateDark.slate2,
+          muted: slateDark.slate9,
+          soft: slateDark.slate11,
+          text: slateDark.slate12,
+        };
+  return {
+    background: neutral.surface,
+    foreground: neutral.text,
+    cursor: blueDark.blue11,
+    cursorAccent: neutral.surface,
+    selectionBackground: blueDark.blue5,
+    selectionForeground: neutral.text,
+    black: neutral.raised,
+    brightBlack: neutral.muted,
+    white: neutral.soft,
+    brightWhite: neutral.text,
+    red: redDark.red9,
+    brightRed: redDark.red11,
+    green: greenDark.green9,
+    brightGreen: greenDark.green11,
+    yellow: amberDark.amber9,
+    brightYellow: amberDark.amber11,
+    blue: blueDark.blue9,
+    brightBlue: blueDark.blue11,
+    magenta: purpleDark.purple9,
+    brightMagenta: purpleDark.purple11,
+    cyan: cyanDark.cyan9,
+    brightCyan: cyanDark.cyan11,
+  };
+}
+
 export function Terminal({
   onConnectionChange,
   theme = "day",
@@ -66,30 +111,7 @@ export function Terminal({
       disableStdin: true,
       screenReaderMode: true,
       scrollback: 5000,
-      theme: {
-        background: slateDark.slate1,
-        foreground: slateDark.slate12,
-        cursor: blueDark.blue11,
-        cursorAccent: slateDark.slate1,
-        selectionBackground: blueDark.blue5,
-        selectionForeground: slateDark.slate12,
-        black: slateDark.slate2,
-        brightBlack: slateDark.slate9,
-        white: slateDark.slate11,
-        brightWhite: slateDark.slate12,
-        red: redDark.red9,
-        brightRed: redDark.red11,
-        green: greenDark.green9,
-        brightGreen: greenDark.green11,
-        yellow: amberDark.amber9,
-        brightYellow: amberDark.amber11,
-        blue: blueDark.blue9,
-        brightBlue: blueDark.blue11,
-        magenta: purpleDark.purple9,
-        brightMagenta: purpleDark.purple11,
-        cyan: cyanDark.cyan9,
-        brightCyan: cyanDark.cyan11,
-      },
+      theme: terminalPalette(theme),
     });
     terminalRef.current = term;
     const fit = new FitAddon();
@@ -249,59 +271,8 @@ export function Terminal({
   }, []);
 
   useEffect(() => {
-    const term = terminalRef.current;
-    if (!term) return;
-    const palette: ITheme =
-      theme === "comfort"
-        ? {
-            background: sandDark.sand1,
-            foreground: sandDark.sand12,
-            cursor: blueDark.blue11,
-            cursorAccent: sandDark.sand1,
-            selectionBackground: blueDark.blue5,
-            selectionForeground: sandDark.sand12,
-            black: sandDark.sand2,
-            brightBlack: sandDark.sand9,
-            white: sandDark.sand11,
-            brightWhite: sandDark.sand12,
-            red: redDark.red9,
-            brightRed: redDark.red11,
-            green: greenDark.green9,
-            brightGreen: greenDark.green11,
-            yellow: amberDark.amber9,
-            brightYellow: amberDark.amber11,
-            blue: blueDark.blue9,
-            brightBlue: blueDark.blue11,
-            magenta: purpleDark.purple9,
-            brightMagenta: purpleDark.purple11,
-            cyan: cyanDark.cyan9,
-            brightCyan: cyanDark.cyan11,
-          }
-        : {
-            background: slateDark.slate1,
-            foreground: slateDark.slate12,
-            cursor: blueDark.blue11,
-            cursorAccent: slateDark.slate1,
-            selectionBackground: blueDark.blue5,
-            selectionForeground: slateDark.slate12,
-            black: slateDark.slate2,
-            brightBlack: slateDark.slate9,
-            white: slateDark.slate11,
-            brightWhite: slateDark.slate12,
-            red: redDark.red9,
-            brightRed: redDark.red11,
-            green: greenDark.green9,
-            brightGreen: greenDark.green11,
-            yellow: amberDark.amber9,
-            brightYellow: amberDark.amber11,
-            blue: blueDark.blue9,
-            brightBlue: blueDark.blue11,
-            magenta: purpleDark.purple9,
-            brightMagenta: purpleDark.purple11,
-            cyan: cyanDark.cyan9,
-            brightCyan: cyanDark.cyan11,
-          };
-    term.options.theme = palette;
+    if (terminalRef.current)
+      terminalRef.current.options.theme = terminalPalette(theme);
   }, [theme]);
 
   return (

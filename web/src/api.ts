@@ -89,14 +89,14 @@ export async function machineInfo(): Promise<MachineInfo> {
 }
 
 /** Reads a one-time pairing token from the URL fragment (#t=...). */
-export function readTokenFromHash(): string | null {
+function readTokenFromHash(): string | null {
   const hash = window.location.hash.replace(/^#/, "");
   const params = new URLSearchParams(hash);
   return params.get("t");
 }
 
 /** Removes the token from the address bar without reloading. */
-export function clearHash(): void {
+function clearHash(): void {
   history.replaceState(
     null,
     "",
@@ -116,7 +116,7 @@ export async function pair(token: string): Promise<void> {
 }
 
 /** Checks whether the current cookie is an authenticated session. */
-export async function checkSession(): Promise<boolean> {
+async function checkSession(): Promise<boolean> {
   const res = await fetch("/api/session");
   if (!res.ok && res.status !== 401)
     throw new Error(`会话校验失败：HTTP ${res.status}`);

@@ -6,3 +6,6 @@ client/deploypilot.exe
 client/internal/webui/dist/assets/
 *.log
 .env
+*.tsbuildinfo
+# PowerShell module analysis cache that once landed in the repo root.
+Microsoft/

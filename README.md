@@ -140,6 +140,7 @@ npm --prefix web run build
 npm --prefix web test      # Node.js 22.18+：任务状态与日志边界测试
 npm --prefix web run test:browser  # 需要已安装 Chrome；使用模拟 API/WS，不调用真实模型
 npm --prefix web run test:integration  # 需要 Chrome 与 Go；真实后台联调，模型与执行器使用本地替身
+npm --prefix web run format  # Prettier 统一格式化 web/src 与 web/tests；format:check 只检查
 client\build.ps1          # 交叉编译 linux amd64/arm64 到 dist\，并生成 checksums.txt
 client\build.ps1 -Local   # 编译本机二进制
 client\build.ps1 -Test    # 运行 go test ./...

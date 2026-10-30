@@ -1,6 +1,6 @@
 export type ThemeName = "day" | "night" | "comfort";
 
-export const THEMES: ThemeName[] = ["day", "night", "comfort"];
+const THEMES: ThemeName[] = ["day", "night", "comfort"];
 
 export function resolveTheme(saved: string | null): ThemeName {
   if (saved && THEMES.includes(saved as ThemeName)) return saved as ThemeName;
