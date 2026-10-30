@@ -3,7 +3,6 @@ import { getTask, listTasks, llmStatus, notifySessionExpired, wsURL, SESSION_EXP
 import {
   applyAgentEvent,
   buildTimeline,
-  defaultContinue,
   isFailedFinal,
   mergeEvent,
   normalizeEvents,
@@ -91,7 +90,6 @@ export function AgentPanel({
   const pendingStartRef = useRef(false);
   const lastSubmittedRef = useRef("");
   const [continuableId, setContinuableId] = useState("");
-  const [continueMode, setContinueMode] = useState(false);
   const seenIdsRef = useRef(new Set<string>());
   const retryDelayRef = useRef(300);
   const hasSnapshotRef = useRef(false);
@@ -219,13 +217,13 @@ export function AgentPanel({
           if (value?.type === "snapshot") { handleSnapshot(value as AgentSnapshot); return; }
           if (typeof value?.type !== "string") return;
           const event = value as AgentEvent;
-          // A start rejection arrives as an error with no task record installed.
-          // Surface the reason in the composer and restore the typed draft
-          // instead of silently clearing it and hiding an empty log.
-          if (event.type === "error" && pendingStartRef.current && !recordRef.current) {
+          // A start rejection is an error that belongs to no task (task events
+          // always carry taskId). Surface the reason in the composer and restore
+          // the typed draft instead of silently clearing it.
+          if (event.type === "error" && pendingStartRef.current && !event.taskId) {
             pendingStartRef.current = false;
             setPendingTitle("");
-            updatePhase("idle");
+            updatePhase(recordRef.current?.phase === "interrupted" ? "interrupted" : recordRef.current ? "finished" : "idle");
             setStatusError(event.text || "任务未能启动，请稍后重试。");
             setTask((current) => current || lastSubmittedRef.current);
             return;
@@ -282,13 +280,9 @@ export function AgentPanel({
   useEffect(() => {
     onPhaseChange?.(phase);
   }, [phase, onPhaseChange]);
-  // Only the shown task can be continued, and only while it is the server's
-  // continuable one; reset the default whenever that changes.
+  // Like a chat: a message sent while the server's continuable session is shown
+  // stays in that session. "新建任务" clears the view to start a fresh one.
   const canContinue = !isBusy(phase) && !!record && record.id === continuableId;
-  useEffect(() => {
-    setContinueMode(defaultContinue(record?.events ?? [], canContinue));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [record?.id, canContinue]);
   useEffect(() => {
     if (!busy) return;
     const timer = setInterval(
@@ -324,14 +318,17 @@ export function AgentPanel({
       lastSubmittedRef.current = text;
       pendingStartRef.current = true;
       newTaskModeRef.current = false;
-      const continueFrom = continueMode && canContinue && recordRef.current ? recordRef.current.id : undefined;
+      const continueFrom = canContinue && recordRef.current ? recordRef.current.id : undefined;
       socket.send(JSON.stringify(continueFrom ? { type: "start", task: text, continueFrom } : { type: "start", task: text }));
-      selectedIdRef.current = null;
-      recordRef.current = null;
-      setRecord(null);
-      setEvents([]);
-      pending.current = [];
-      setPendingTitle(text);
+      if (!continueFrom) {
+        // A new session: clear the view until the server's snapshot arrives.
+        selectedIdRef.current = null;
+        recordRef.current = null;
+        setRecord(null);
+        setEvents([]);
+        pending.current = [];
+        setPendingTitle(text);
+      }
       setTask("");
       startedAt.current = Date.now();
       setSeconds(0);
@@ -405,7 +402,7 @@ export function AgentPanel({
         ref={inputRef}
         value={task}
         onChange={(event) => setTask(event.target.value)}
-        placeholder={busy ? "准备下一条任务" : empty ? "输入部署任务" : continueMode && canContinue ? "补充说明，在此任务的进展上继续" : "输入下一个任务"}
+        placeholder={busy ? "准备下一条任务" : empty ? "输入部署任务" : canContinue ? "继续对话，在当前任务的进展上执行（点「新建任务」开始新会话）" : "输入新任务"}
         rows={2}
         onKeyDown={(event) => {
           // Some IMEs report keyCode 229 after composition ends; that Enter selects text.
@@ -424,12 +421,6 @@ export function AgentPanel({
       />
       <div className="composer-foot">
         <Settings status={status} disabled={busy} onSaved={setStatus} version={version} />
-        {canContinue && (
-          <label className="continue-toggle" title="保留该任务的执行上下文，模型从已有进展继续；关闭则作为独立的新任务">
-            <input type="checkbox" checked={continueMode} onChange={(event) => setContinueMode(event.target.checked)} />
-            <span>在此任务上继续</span>
-          </label>
-        )}
         <button
           className="button primary"
           onClick={start}
@@ -458,7 +449,7 @@ export function AgentPanel({
             <span className="dot" data-tone={phaseTone[phase]} />
             <span role="status">{label}</span>
           </span>
-          {tasks.length > 0 && <select className="task-history-select" aria-label="任务历史" value={record?.id ?? ""} disabled={busy} onChange={(event) => void selectTask(event.target.value)}><option value="">任务历史</option>{tasks.map((item) => <option key={item.id} value={item.id}>{item.continuedFrom ? "（续）" : ""}{item.title} | {new Date(item.startedAt).toLocaleString()}</option>)}</select>}
+          {tasks.length > 0 && <select className="task-history-select" aria-label="任务历史" value={record?.id ?? ""} disabled={busy} onChange={(event) => void selectTask(event.target.value)}><option value="">任务历史</option>{tasks.map((item) => <option key={item.id} value={item.id}>{item.title} | {new Date(item.startedAt).toLocaleString()}</option>)}</select>}
           {seconds > 0 && (
             <span className="meta-extra">{formatDuration(seconds)}</span>
           )}
@@ -574,6 +565,18 @@ function TimelineRow({ item, live }: { item: TimelineItem; live: boolean }) {
       const text = item.event.text?.trim();
       return text ? <li className="assistant-message">{text}</li> : null;
     }
+    // An operator follow-up in the same session, shown like the original task.
+    case "user":
+      return (
+        <li className="tl tl-task tl-followup">
+          <span className="tl-marker">
+            <Icon name="user" size={14} />
+          </span>
+          <div className="tl-body">
+            <p className="task-text">{item.event.text}</p>
+          </div>
+        </li>
+      );
     case "error":
       return (
         <li className="tl tl-error">

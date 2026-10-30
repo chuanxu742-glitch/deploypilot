@@ -99,9 +99,27 @@ func TestContinueResumesLastTaskConversation(t *testing.T) {
 			t.Fatalf("continued request lost %q", want)
 		}
 	}
+	// A follow-up stays in the same session: one history entry, original title,
+	// and the operator's message recorded in its timeline.
 	snapshot = latestSnapshot(t, srv, cookie)
-	if snapshot["task"].(map[string]any)["continuedFrom"] != firstID {
-		t.Fatal("continued task does not record its origin")
+	record := snapshot["task"].(map[string]any)
+	if record["id"] != firstID || record["title"] != "deploy vllm" {
+		t.Fatalf("follow-up created a new session: id=%v title=%v", record["id"], record["title"])
+	}
+	if tasks := snapshot["tasks"].([]any); len(tasks) != 1 {
+		t.Fatalf("history has %d entries, want 1", len(tasks))
+	}
+	sawUser := false
+	for _, e := range record["events"].([]any) {
+		if ev := e.(map[string]any); ev["type"] == "user" && ev["text"] == "继续，用 8001 端口" {
+			sawUser = true
+		}
+	}
+	if !sawUser {
+		t.Fatal("operator follow-up missing from the session timeline")
+	}
+	if snapshot["continuable"] != firstID {
+		t.Fatal("session should remain continuable")
 	}
 }
 

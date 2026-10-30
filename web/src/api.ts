@@ -39,8 +39,6 @@ export interface TaskSummary {
   startedAt: number;
   endedAt?: number;
   phase: "running" | "stopping" | "finished" | "interrupted";
-  /** Set when this run continued an earlier task's conversation. */
-  continuedFrom?: string;
 }
 
 export interface TaskRecord extends TaskSummary {
@@ -52,7 +50,7 @@ export interface AgentSnapshot {
   state: "idle" | "running" | "stopping";
   task: TaskRecord | null;
   tasks: TaskSummary[];
-  /** The one finished task whose conversation the server can continue. */
+  /** The one finished session the server can continue (the latest run). */
   continuable?: string;
 }
 

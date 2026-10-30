@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTimeline, defaultContinue, isFailedFinal, normalizeEvents, type AgentEvent } from "../src/agent-state.ts";
+import { buildTimeline, isFailedFinal, normalizeEvents, type AgentEvent } from "../src/agent-state.ts";
 import {
   onSessionExpired,
   notifySessionExpired,
@@ -31,14 +31,19 @@ test("session-expired handler fires until cleared", () => {
   assert.equal(count, 2);
 });
 
-test("continuing is the default only for an unfinished continuable task", () => {
-  const failed = [{ type: "tool_done" }, { type: "final", success: false }] as AgentEvent[];
-  const succeeded = [{ type: "final", success: true }] as AgentEvent[];
-  const stopped = [{ type: "tool_call" }] as AgentEvent[];
-  assert.equal(defaultContinue(failed, true), true);
-  assert.equal(defaultContinue(stopped, true), true);
-  assert.equal(defaultContinue(succeeded, true), false);
-  assert.equal(defaultContinue(failed, false), false);
+test("a follow-up in the same session renders as its own operator row", () => {
+  const timeline = buildTimeline([
+    { type: "thinking", text: "第一次回复" },
+    { type: "final", success: true, text: "完成" },
+    { type: "user", text: "当前电脑有python环境吗？" },
+    { type: "thinking", text: "有的" },
+    { type: "thinking", text: "，Python 3.11.9。" },
+  ]);
+  assert.deepEqual(timeline.map((i) => i.kind), ["message", "final", "user", "message"]);
+  const user = timeline[2];
+  assert.equal(user.kind === "user" && user.event.text, "当前电脑有python环境吗？");
+  const reply = timeline[3];
+  assert.equal(reply.kind === "message" && reply.event.text, "有的，Python 3.11.9。");
 });
 
 test("stored streaming fragments render as one reply, not one line each", () => {

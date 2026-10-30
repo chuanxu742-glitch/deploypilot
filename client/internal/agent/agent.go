@@ -24,6 +24,9 @@ const (
 	EventToolDone EventType = "tool_done" // tool finished
 	EventFinal    EventType = "final"     // task complete
 	EventError    EventType = "error"
+	// EventUser is an operator follow-up message in a continued session. The
+	// server records it; the agent loop never emits it.
+	EventUser EventType = "user"
 )
 
 // Event is a single streamed update.
@@ -234,7 +237,6 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 		// Continue the earlier conversation; the machine context is already in it.
 		window = a.resume.window
 		window.addFollowUp(task)
-		a.emit(Event{Type: EventStatus, Text: "在上一个任务的上下文上继续执行。"})
 	} else {
 		a.emit(Event{Type: EventActivity, State: "preparing", Text: "正在收集机器环境"})
 		info := a.exec.MachineInfo(ctx)

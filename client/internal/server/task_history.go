@@ -55,8 +55,6 @@ type taskRecord struct {
 	Phase     string        `json:"phase"`
 	Events    []agent.Event `json:"events"`
 	NextID    int64         `json:"nextId"`
-	// ContinuedFrom is the task whose conversation this run resumed.
-	ContinuedFrom string `json:"continuedFrom,omitempty"`
 }
 
 func (s *Server) loadTasks() {
@@ -200,6 +198,13 @@ func (s *Server) subscribeTasks() (<-chan []byte, func()) {
 func (s *Server) emitTask(task *taskRecord, event agent.Event) {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
+	s.broadcastTaskLocked(s.appendEventLocked(task, event))
+}
+
+// appendEventLocked stores event on task (numbered, bounded, merged with the
+// previous streaming delta) and schedules persistence. It returns the event as
+// numbered, for broadcasting. Caller holds taskMu.
+func (s *Server) appendEventLocked(task *taskRecord, event agent.Event) agent.Event {
 	task.NextID++
 	event.ID = task.NextID
 	event.TaskID = task.ID
@@ -235,8 +240,30 @@ func (s *Server) emitTask(task *taskRecord, event agent.Event) {
 	if s.historyTimer == nil {
 		s.historyTimer = time.AfterFunc(200*time.Millisecond, func() { s.taskMu.Lock(); defer s.taskMu.Unlock(); s.persistTasksLocked(); s.historyTimer = nil })
 	}
-	s.broadcastTaskLocked(event)
+	return event
 }
+
+// reopenTaskLocked moves the task to the front of the history with its events
+// loaded and marks it running again. Caller holds taskMu.
+func (s *Server) reopenTaskLocked(id string) (*taskRecord, error) {
+	for i, task := range s.tasks {
+		if task.ID != id {
+			continue
+		}
+		record, err := s.readTaskLocked(task)
+		if err != nil {
+			return nil, err
+		}
+		if record.Events == nil {
+			record.Events = []agent.Event{}
+		}
+		record.Phase, record.EndedAt = "running", 0
+		s.tasks = append([]*taskRecord{record}, append(s.tasks[:i:i], s.tasks[i+1:]...)...)
+		return record, nil
+	}
+	return nil, errors.New("task not found")
+}
+
 func (s *Server) startTask(text, owner, continueFrom string) string {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
@@ -262,13 +289,25 @@ func (s *Server) startTask(text, owner, continueFrom string) string {
 	if !s.acquireAgent() {
 		return "已有任务在运行或清理，请稍后重试。"
 	}
-	token := make([]byte, 16)
-	if _, err := rand.Read(token); err != nil {
-		s.releaseAgent()
-		return err.Error()
+	var task *taskRecord
+	if resume != nil {
+		// A follow-up stays in the same session: same record, same history
+		// entry, with the operator's message added to its timeline.
+		var err error
+		if task, err = s.reopenTaskLocked(continueFrom); err != nil {
+			s.releaseAgent()
+			return "无法继续：任务记录读取失败：" + err.Error()
+		}
+		s.appendEventLocked(task, agent.Event{Type: agent.EventUser, Text: text})
+	} else {
+		token := make([]byte, 16)
+		if _, err := rand.Read(token); err != nil {
+			s.releaseAgent()
+			return err.Error()
+		}
+		task = &taskRecord{ID: hex.EncodeToString(token), Title: text, StartedAt: time.Now().UnixMilli(), Phase: "running", Events: []agent.Event{}}
+		s.tasks = append([]*taskRecord{task}, s.tasks...)
 	}
-	task := &taskRecord{ID: hex.EncodeToString(token), Title: text, StartedAt: time.Now().UnixMilli(), Phase: "running", Events: []agent.Event{}, ContinuedFrom: continueFrom}
-	s.tasks = append([]*taskRecord{task}, s.tasks...)
 
 	ctx, cancel := context.WithCancel(s.baseCtx)
 	s.taskCancel = cancel

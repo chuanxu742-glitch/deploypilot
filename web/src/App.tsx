@@ -3,7 +3,7 @@ import { authenticate, machineInfo, onSessionExpired, type MachineInfo } from ".
 import { Terminal, type TerminalConnection } from "./Terminal";
 import { AgentPanel, isBusy, phaseTone } from "./Agent";
 import type { TaskPhase } from "./agent-state";
-import { Icon, Logo } from "./Icon";
+import { Icon } from "./Icon";
 import { clampSplitRatio, readPreference, readSplitRatio, resolveTheme, writePreference, type ThemeName } from "./ui-preferences";
 
 type AuthState =
@@ -97,7 +97,6 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <Logo size={32} />
           <h1 className="brand-name">DeployPilot</h1>
         </div>
         {authed && (
