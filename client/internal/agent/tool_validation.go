@@ -144,7 +144,23 @@ func validateToolArgs(name, input string) error {
 		if err := decodeToolArgs(input, &a, "summary", "success"); err != nil {
 			return err
 		}
-		return nonempty(a.Summary, "summary")
+		if err := nonempty(a.Summary, "summary"); err != nil {
+			return err
+		}
+		if a.Outcome != "" && a.Outcome != "needs_input" {
+			return fmt.Errorf("outcome must be omitted or needs_input")
+		}
+		if a.Outcome == "needs_input" {
+			if a.Success {
+				return fmt.Errorf("outcome=needs_input requires success=false")
+			}
+			var fields map[string]json.RawMessage
+			_ = json.Unmarshal([]byte(input), &fields)
+			if _, ok := fields["verification_call_ids"]; ok {
+				return fmt.Errorf("outcome=needs_input must not include verification_call_ids")
+			}
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown tool %q", name)
 	}

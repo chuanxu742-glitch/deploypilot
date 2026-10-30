@@ -127,12 +127,13 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolFinish,
-				Description: "Call when the task is complete (or cannot proceed) to end the session with a summary for the operator. On success, cite real successful run_command or wait_for call IDs in verification_call_ids; run the final verification immediately before finish, with no later changes.",
+				Description: "For an already started task, call finish to report completion or failure. If a specific operator answer is required, use outcome=needs_input with success=false and ask a concrete question in summary. Ordinary greetings and answers that need no machine operation should be natural-language replies without finish. On success, cite real successful run_command or wait_for call IDs in verification_call_ids; run the final verification immediately before finish, with no later changes.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
 						"summary":{"type":"string","description":"What was accomplished, how to use/verify the result, and any follow-ups."},
 						"success":{"type":"boolean"},
+						"outcome":{"type":"string","enum":["needs_input"],"description":"For an in-progress task blocked on information only the operator can provide. Requires success=false and must not include verification_call_ids."},
 						"verification_call_ids":{"type":"array","items":{"type":"string"},"description":"Successful run_command or wait_for call IDs supporting success=true."}
 					},
 					"required":["summary","success"]
@@ -183,5 +184,6 @@ type waitForArgs struct {
 type finishArgs struct {
 	Summary             string   `json:"summary"`
 	Success             bool     `json:"success"`
+	Outcome             string   `json:"outcome,omitempty"`
 	VerificationCallIDs []string `json:"verification_call_ids,omitempty"`
 }

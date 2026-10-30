@@ -23,6 +23,14 @@ test("isFailedFinal flags only an explicit failed final event", () => {
   );
   assert.equal(isFailedFinal({ type: "final" } as AgentEvent), false);
   assert.equal(
+    isFailedFinal({ type: "final", state: "reply", success: false } as AgentEvent),
+    false,
+  );
+  assert.equal(
+    isFailedFinal({ type: "final", state: "needs_input", success: false } as AgentEvent),
+    false,
+  );
+  assert.equal(
     isFailedFinal({ type: "tool_done", success: false } as AgentEvent),
     false,
   );

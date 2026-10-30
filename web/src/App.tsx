@@ -16,6 +16,7 @@ import { Terminal, type TerminalConnection } from "./Terminal";
 import { AgentPanel, isBusy, phaseTone } from "./Agent";
 import type { TaskPhase } from "./agent-state";
 import { Icon } from "./Icon";
+import brandMark from "./assets/bailu-mark.png";
 import {
   clampSplitRatio,
   readPreference,
@@ -149,6 +150,13 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
+          <img
+            className="brand-mark"
+            src={brandMark}
+            width={28}
+            height={28}
+            alt=""
+          />
           <h1 className="brand-name">DeployPilot</h1>
         </div>
         {authed && (

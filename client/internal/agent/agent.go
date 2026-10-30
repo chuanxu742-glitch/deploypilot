@@ -174,6 +174,31 @@ func completeTurn(turn []llm.Message) []llm.Message {
 	return turn
 }
 
+// hasPriorToolUse is conservative across retained turns and compacted history.
+// If compaction has omitted any entries, the run may have used tools, so plain
+// chat cannot silently end a task whose earlier execution evidence was dropped.
+func hasPriorToolUse(window *contextWindow) bool {
+	if window == nil {
+		return false
+	}
+	if window.omitted > 0 {
+		return true
+	}
+	for _, entry := range window.history {
+		if entry.Tool != "" {
+			return true
+		}
+	}
+	for _, turn := range window.turns {
+		for _, message := range turn {
+			if message.Role == llm.RoleTool || len(message.ToolCalls) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // streamTurn requests one model turn. It retries a connection that dropped
 // mid-response and, when the provider reports a context overflow, compacts to
 // a smaller budget and asks again. budget persists across turns.
@@ -251,8 +276,8 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 	nudged := false
 	var repetition repetitionGuard
 
-	// Like pi and oh-my-pi, a run has no turn cap by default: it ends when the
-	// model calls finish, stops twice without it, fails, or the operator stops it.
+	// Like pi and oh-my-pi, a run has no turn cap by default: it ends with a
+	// direct plain reply, finish, repeated missing-finish responses, failure, or cancellation.
 	for step := 1; a.maxSteps <= 0 || step <= a.maxSteps; step++ {
 		select {
 		case <-ctx.Done():
@@ -278,6 +303,12 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 
 		if len(res.Message.ToolCalls) == 0 {
 			content := strings.TrimSpace(res.Message.Content)
+			if content != "" && !hasPriorToolUse(window) {
+				window.turns = append(window.turns, turn)
+				a.emit(Event{Type: EventFinal, State: "reply", Text: content, Success: false})
+				a.audit.Append(AuditEntry{Kind: "final", Note: content})
+				return nil
+			}
 			if !nudged {
 				// A natural-language stop is not evidence of deployment success.
 				// Ask once for the existing explicit completion protocol.
@@ -532,7 +563,11 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			}
 			summary += "\n\n实际验证记录：\n" + evidence
 		}
-		emit(Event{Type: EventFinal, Text: summary, Success: args.Success})
+		state := ""
+		if args.Outcome == "needs_input" {
+			state = "needs_input"
+		}
+		emit(Event{Type: EventFinal, State: state, Text: summary, Success: args.Success})
 		a.audit.Append(AuditEntry{Kind: "final", Note: summary})
 		return true, result("acknowledged")
 
@@ -543,7 +578,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 
 // finishReplyNudge requests an explicit outcome once; it is not an independent
 // verifier. The model still owns finish.success and must cite observed results.
-const finishReplyNudge = "你尚未调用 finish。若任务仍需执行，请继续使用工具；若已结束，请根据实际执行和验证结果调用 finish，填写 summary 和 success。无法完成或未验证成功时 success=false，不要只用文字宣称成功。"
+const finishReplyNudge = "你尚未调用 finish。普通问候或无需主机操作的问答应直接自然语言回答，不调用工具或 finish。已开始的任务仍需继续执行，或调用 finish 明确结论；只有缺少操作员才能提供的信息时，才调用 finish outcome=needs_input 且 success=false，并在 summary 提出具体问题。成功时须填写真实验证证据，失败时 success=false，不能只用文字宣称成功。"
 
 // systemPrompt encodes the agent's role and deployment know-how.
 var systemPrompt = strings.TrimSpace(`
@@ -553,7 +588,8 @@ var systemPrompt = strings.TrimSpace(`
 - 使用 run_command 执行 shell 命令来检查环境、安装依赖、下载模型、启动服务并验证。先探查再动手，不要臆断。
 - 每一步说明你要做什么、为什么这么做，再调用工具。
 - 遇到报错先读取日志和错误输出，定位根因后再修复，不要盲目重试。
-- 任务完成或无法继续时，调用 finish 给出清晰的总结（成果、如何验证、后续注意事项）。
+- 问候、普通问答或无需主机操作的闲聊，直接自然语言回答，不调用工具或 finish。
+- 部署任务已开始后，任务完成或真实失败时调用 finish 总结。缺少只有操作员能提供的信息时，调用 finish(outcome:"needs_input", success:false)，在 summary 里提出具体问题；这表示等待补充信息，不表示任务失败。
 - 成功完成前执行真实检查（服务接口、健康状态、预期文件等），finish(success=true) 的 verification_call_ids 必须引用 run_command 或 wait_for 返回的 call_id。新的命令或文件修改会使旧验证失效；请把最终检查放在最后。不能只填写一段声称成功的文字。
 - 同一调用连续得到相同结果时换方法，优先读完整日志；不要重复运行无变化的命令。第三次会收到提醒，第四次任务会暂停。
 
@@ -575,7 +611,7 @@ var systemPrompt = strings.TrimSpace(`
 - 预计较慢的命令（大模型下载、pip 安装大包、构建镜像）设置 timeout_seconds（最长 3600），或改为后台执行后轮询进度。
 - 非零退出码不一定是故障：grep 没匹配、which/test 未找到都会返回 1，根据输出判断。
 - 等待网址可访问、日志出现某句话或进程退出时用 wait_for，一次调用在程序内等待，不要反复 sleep/curl 占用模型轮次。
-- 需要操作员提供的信息（密码、令牌、要选择的版本等）无法自行获得时，调用 finish（success=false），在 summary 里写清需要什么。操作员可以在该任务上继续执行并补充信息，已有进展会保留。
+- 已开始任务缺少操作员才能提供的信息（密码、令牌、版本选择等）时，调用 finish(outcome:"needs_input", success:false)，在 summary 里写清具体问题。这表示等待补充信息，不表示任务失败；操作员可以继续该任务并补充信息，已有进展会保留。
 
 部署知识:
 - ModelScope 下载模型: 用 pip install modelscope，然后 modelscope download --model <id> --local_dir <dir>；国内网络通常可直连 modelscope.cn。HuggingFace 不通时可设 HF_ENDPOINT=https://hf-mirror.com。

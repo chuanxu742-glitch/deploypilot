@@ -42,6 +42,43 @@ func TestFinishRequiresRealSuccessfulVerification(t *testing.T) {
 	}
 }
 
+func TestFinishNeedsInputIsSeparateFromFailureAndSuccess(t *testing.T) {
+	for _, input := range []string{
+		`{"summary":"need input","success":true,"outcome":"needs_input"}`,
+		`{"summary":"need input","success":false,"outcome":"needs_input","verification_call_ids":[]}`,
+		`{"summary":"need input","success":false,"outcome":"unknown"}`,
+	} {
+		if err := validateToolArgs(toolFinish, input); err == nil {
+			t.Errorf("accepted incompatible finish outcome: %s", input)
+		}
+	}
+
+	var events []Event
+	a := New(Config{Executor: newFakeExec(), Emit: func(e Event) { events = append(events, e) }})
+	done, msg := a.runTool(context.Background(), 1, llm.ToolCall{ID: "need", Function: llm.FunctionCall{
+		Name: toolFinish, Arguments: `{"summary":"Which region should I use?","success":false,"outcome":"needs_input"}`,
+	}})
+	if !done || strings.HasPrefix(msg.Content, "error:") {
+		t.Fatalf("needs_input should end normally: done=%v, result=%s", done, msg.Content)
+	}
+	final := events[len(events)-1]
+	if final.Type != EventFinal || final.State != "needs_input" || final.Success || final.Text != "Which region should I use?" {
+		t.Fatalf("unexpected needs_input event: %+v", final)
+	}
+
+	events = nil
+	done, _ = a.runTool(context.Background(), 2, llm.ToolCall{ID: "failed", Function: llm.FunctionCall{
+		Name: toolFinish, Arguments: `{"summary":"could not complete","success":false}`,
+	}})
+	if !done {
+		t.Fatal("ordinary failure finish should still end")
+	}
+	final = events[len(events)-1]
+	if final.Type != EventFinal || final.State != "" || final.Success || final.Text != "could not complete" {
+		t.Fatalf("ordinary finish(false) changed: %+v", final)
+	}
+}
+
 func TestFileChangeInvalidatesVerification(t *testing.T) {
 	a := New(Config{Executor: newFakeExec()})
 	call := func(id, name, args string) (bool, llm.Message) {

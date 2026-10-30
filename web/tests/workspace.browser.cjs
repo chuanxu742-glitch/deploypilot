@@ -788,6 +788,34 @@ const { mkdirSync } = require("node:fs");
     );
     await page.getByText("执行工具", { exact: true }).waitFor();
     await page.getByText("我会先检查监听端口", { exact: true }).waitFor();
+    sendTaskEvent({
+      type: "final",
+      state: "reply",
+      text: "我会先检查监听端口",
+      success: false,
+    });
+    sendTaskEvent({ type: "status", text: "普通回复已结束" });
+    await page.getByText("普通回复已结束", { exact: true }).waitFor();
+    assert.equal(
+      await page.locator(".tl-final, .final-card").count(),
+      0,
+      "a reply final is already represented by its streamed assistant message",
+    );
+    assert.equal(await page.locator(".tl-error").count(), 0);
+    sendTaskEvent({
+      type: "final",
+      state: "needs_input",
+      text: "请补充目标服务地址。",
+      success: false,
+    });
+    sendTaskEvent({ type: "status", text: "补充信息状态已收到" });
+    await page.getByText("补充信息状态已收到", { exact: true }).waitFor();
+    const needsInput = page
+      .locator(".tl-final")
+      .filter({ hasText: "等待补充信息" });
+    await needsInput.waitFor();
+    await needsInput.getByText("请补充目标服务地址。", { exact: true }).waitFor();
+    assert.equal(await needsInput.locator(".tl-error").count(), 0);
     await page.locator(".machine-details summary").waitFor();
     await page
       .locator(".action-evidence")
@@ -851,6 +879,9 @@ const { mkdirSync } = require("node:fs");
     await page.getByRole("button", { name: "返回最新记录" }).waitFor();
     await page.getByRole("button", { name: "返回最新记录" }).click();
     await page.getByRole("button", { name: "停止任务" }).click();
+    const failedFinal = page.locator(".tl-final.tl-error");
+    await failedFinal.getByText("任务未完成", { exact: true }).waitFor();
+    await failedFinal.getByText("任务已停止。", { exact: true }).waitFor();
     assert.equal(
       await page.locator(".term").getAttribute("data-readonly"),
       "true",

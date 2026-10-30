@@ -27,9 +27,14 @@ export type TaskPhase =
   | "interrupted"
   | "disconnected";
 
-/** A final event the model reported as an explicit failure (success === false). */
+/** An explicit task failure; normal replies and requests for input are neutral. */
 export function isFailedFinal(event: AgentEvent): boolean {
-  return event.type === "final" && event.success === false;
+  return (
+    event.type === "final" &&
+    event.state !== "reply" &&
+    event.state !== "needs_input" &&
+    event.success === false
+  );
 }
 
 export const MAX_EVENTS = 300;

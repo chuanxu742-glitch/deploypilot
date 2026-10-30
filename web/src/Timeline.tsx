@@ -76,12 +76,16 @@ export function TimelineRow({
         </li>
       );
     case "final": {
+      if (item.event.state === "reply") return null;
+      const needsInput = item.event.state === "needs_input";
       const failed = isFailedFinal(item.event);
       return (
         <li className={failed ? "tl tl-final tl-error" : "tl tl-final"}>
           <div className="tl-body">
             <div className="final-card">
-              <strong>{failed ? "任务未完成" : "任务结束"}</strong>
+              <strong>
+                {needsInput ? "等待补充信息" : failed ? "任务未完成" : "任务结束"}
+              </strong>
               {item.event.text && <p>{item.event.text}</p>}
             </div>
           </div>

@@ -312,6 +312,10 @@ input::placeholder,
   gap: 12px;
   min-width: 0;
 }
+.brand-mark {
+  flex-shrink: 0;
+  object-fit: contain;
+}
 .brand-name {
   margin: 0;
   font-size: 14px;

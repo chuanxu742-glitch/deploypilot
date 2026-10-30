@@ -106,3 +106,19 @@ Luna 另执行了 19 项模拟 API/WS 的浏览器交互检查并回报通过；
 | 差异与敏感内容检查 | `git diff --check`；本轮源文件凭证模式扫描 | 空白检查退出码 0；模式命中仅两处既有 QR/链接测试 fixture，没有发现待新增的真实凭证。模式扫描不能代替全面保密审计。 |
 
 本轮只是清理、源码提交与测试准备，不发布 Release、不合入主干。真实长部署效果、Linux 真机行为和模型选择评测仍待下一步实际测试。
+
+## 追加：普通问候误报失败与品牌图标
+
+主人随后明确要求直接发布；v0.4.4 已发布（881f9db）。用户实际测试截图显示：自然语言问候被无工具回复提醒强制转入 finish，成功验证门禁又不接受无证据成功，最终 finish(false) 被网页显示为部署失败。源码调用链支持这一原因；未读取或推测用户的私有模型请求。
+
+普通非空回复在尚无工具活动时直接结束本轮，以 reply 结果记录且不声称部署成功；有过工具活动（包括续聊历史）的任务保留 finish 要求。finish 可使用 outcome=needs_input 表达具体提问，只接受 success=false 且不得附验证编号。默认 finish(false) 仍是失败。蓝色品牌 mark 从 a4a30e2 的原始资源恢复，SHA-256 为 289a2089fb020c1624cf0657fe7a2fdfd2a0310ef892475bbad770592b251173，旁边使用 DeployPilot 文字。
+
+| 结论 | 验证方式 | 实际结果与局限 |
+|---|---|---|
+| Agent 结束语义和验证门禁通过 | Luna 定向测试；主代理整个 `go test ./internal/agent -count=1 -timeout=90s` | 两者退出码 0；整包 23.463s。覆盖普通回复、空回复、执行后缺 finish、Resume 读取历史、needs_input 参数冲突和真实验证记录。整包日志 `.probe-tmp/conversation-agent-tests.log`；定向测试在 Luna 工具记录中。 |
+| 受影响包静态检查通过 | 主代理 `go vet ./internal/agent ./internal/server` | 退出码 0，无诊断，日志 `.probe-tmp/conversation-go-vet.log`。 |
+| 前端单测与构建通过 | Luna `npm test`；主代理 `npm --prefix web run build` | 退出码 0，32/32；构建包含品牌 PNG。单测在 Luna 工具记录中，构建日志 `.probe-tmp/conversation-web-build.log`。 |
+| 三种最终显示保留不同含义 | 主代理 `node web/tests/workspace.browser.cjs` | 退出码 0，普通 reply 不出卡、needs_input 中性卡、无 state 的失败红卡检查通过；桌面/手机与原有操作检查通过。日志 `.probe-tmp/conversation-workspace-browser.log`。 |
+| 实际网页链路可用 | Luna `DP_BROWSER_INTEGRATION=1 go test ./internal/server -run '^TestConversationFrontendBrowserIntegration$' -count=1 -timeout=90s -v`，主代理核对原始日志及两张截图 | 退出码 0，包 5.323s、Chrome 3.13s，一次通过；问候仅一轮模型请求，无失败卡；提问刷新恢复并可继续，实际失败仍红，清理后输入可执行，品牌图片真实加载。日志 `.probe-tmp/conversation-real-backend.log`；截图 `.probe-tmp/ui-screenshots/conversation-desktop.png`、`conversation-mobile.png`。 |
+
+联调使用本地脚本模型和执行器替身，验证的是程序与网页路径，没有调用线上模型或真实部署。源码修复准备提交推送并按已有发布授权构建 v0.4.5；发布位置与下一步以 issue #1 为准，不把本地测试说成用户正在运行的进程已更新。

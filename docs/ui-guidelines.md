@@ -13,7 +13,7 @@
 
 - 应用使用 Radix 色阶，外部命令输出自身的颜色不受应用配色约束。提供日间、夜间和暖色外观，终端保持深色。
 - 应用字号采用 14、24、48px；边框使用 0.5px 变量。
-- 图标使用 Lucide SVG；界面文案简洁，不使用装饰性的英文、字符图标或推广标语。
+- 操作图标使用 Lucide SVG；品牌使用仓库历史中的蓝色 Logo，旁边保留 DeployPilot 名称。界面文案简洁，不使用装饰性的英文、字符图标或推广标语。
 - 无应用渐变、阴影、动画和过渡。保留必要的圆角、焦点、选中、错误和运行状态提示。
 
 静态检查在 `web/tests/ui-style.test.ts`；桌面/手机真实渲染检查在 `web/tests/workspace.browser.cjs`；任务交互在 `task-interactions.browser.cjs`，真实后台联调在 `run-real-backend.cjs`。

@@ -7,7 +7,7 @@ const child = spawn(
     "test",
     "./internal/server",
     "-run",
-    "^(TestFrontendBrowserIntegration|TestWaitForFrontendBrowserIntegration)$",
+    "^(TestFrontendBrowserIntegration|TestWaitForFrontendBrowserIntegration|TestConversationFrontendBrowserIntegration)$",
     "-count=1",
     "-timeout=90s",
     "-v",
