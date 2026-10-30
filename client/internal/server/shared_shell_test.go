@@ -3,11 +3,14 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -105,6 +108,120 @@ func TestSharedShellRestoresDirectoryAndHistory(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "persisted-output") {
 		t.Fatal("terminal history lost")
+	}
+}
+
+type persistenceTestSession struct {
+	dead chan struct{}
+	once sync.Once
+}
+
+func (s *persistenceTestSession) Read([]byte) (int, error)    { return 0, io.EOF }
+func (s *persistenceTestSession) Write(p []byte) (int, error) { return len(p), nil }
+func (s *persistenceTestSession) Close() error {
+	s.once.Do(func() { close(s.dead) })
+	return nil
+}
+func (s *persistenceTestSession) Resize(uint16, uint16) error { return nil }
+
+func TestSharedShellPersistenceDoesNotHoldHistoryLock(t *testing.T) {
+	dir := t.TempDir()
+	readyPath := filepath.Join(dir, "shell-ready")
+	if err := os.WriteFile(readyPath, []byte("/latest"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dead := make(chan struct{})
+	shell := &sharedShell{
+		session:     &persistenceTestSession{dead: dead},
+		dir:         dir,
+		cwd:         "/initial",
+		chunks:      [][]byte{[]byte("before")},
+		subscribers: make(map[*shellFeed]struct{}),
+		dead:        dead,
+		readyPath:   readyPath,
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var writerMu sync.Mutex
+	firstWrite := true
+	shell.writeSnapshot = func(path string, data []byte) error {
+		writerMu.Lock()
+		block := firstWrite
+		firstWrite = false
+		writerMu.Unlock()
+		if block {
+			close(entered)
+			<-release
+		}
+		return atomicPrivateWrite(path, data)
+	}
+
+	persistDone := make(chan struct{})
+	go func() { shell.persist(false); close(persistDone) }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("persistence writer was not entered")
+	}
+	_, feed, unsubscribe := shell.Subscribe()
+
+	// History append and subscription must remain available while the disk
+	// writer is blocked; the final Close snapshot must include this update.
+	updated := make(chan struct{})
+	go func() {
+		shell.mu.Lock()
+		shell.keepLocked([]byte("after"))
+		shell.fanOutLocked([]byte("after"))
+		shell.mu.Unlock()
+		close(updated)
+	}()
+	select {
+	case <-updated:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("history lock blocked by persistence writer")
+	}
+	history, _, unsubscribeHistory := shell.Subscribe()
+	if len(history) != 2 || string(history[1]) != "after" {
+		t.Fatalf("subscription history = %q", history)
+	}
+	select {
+	case got := <-feed.output:
+		if string(got) != "after" {
+			t.Fatalf("live output = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber did not receive output")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- shell.Close() }()
+	close(release)
+	select {
+	case <-persistDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked persistence did not finish")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close deadlocked behind persistence")
+	}
+	unsubscribe()
+	unsubscribeHistory()
+
+	data, err := os.ReadFile(filepath.Join(dir, "terminal.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot terminalSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Cwd != "/latest" || len(snapshot.Chunks) != 2 || string(snapshot.Chunks[1]) != "after" {
+		t.Fatalf("final snapshot = %#v", snapshot)
 	}
 }
 

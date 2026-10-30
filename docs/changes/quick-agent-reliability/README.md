@@ -1,12 +1,12 @@
 # Agent 六项快速优化
 
-2026-10-30，当前状态：首版已提交至 PR #2，v0.4.4 已发布为 Latest；根据实际测试截图继续修复普通对话结束语义及缺失品牌图标。下文保留首版过程记录，最新计划和证据见 implementation-plan.md、verification.md 追加段。
+2026-10-30，当前状态：普通对话结束语义与品牌图标已随 v0.4.5 发布，分支提交至 PR #2；流内 upstream_busy 恢复、草稿渲染隔离与终端落盘锁优化已完成相关检查，准备一起发布 v0.4.6。下文保留首版过程记录，最新计划和证据见 implementation-plan.md、verification.md 追加段；实际发布状态以 issue #1 为准。
 
 分支：`chore/agent-reliability-cleanup`
 
 记录粒度：暂停时记录
 
-索引：[issue #1](https://github.com/chuanxu742-glitch/deploypilot/issues/1)。主人已明确授权本地提交和推送 GitHub；未要求发布 Release 或合入主干。
+索引：[issue #1](https://github.com/chuanxu742-glitch/deploypilot/issues/1)。主人已明确授权本地提交、推送 GitHub 及直接发布测试版本；尚未要求合入主干。
 
 依据：主人要求使用 Luna 多线程，争取半小时完成，并明确不要在测试上钻牛角尖。本次“全部”取最近一轮推荐的六项，不扩大到最初的完整八组需求。默认上下文沿用已改的 256 KiB。
 

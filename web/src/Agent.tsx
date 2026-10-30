@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   checkSessionAfterDisconnect,
   getTask,
@@ -24,7 +24,7 @@ import {
 } from "./agent-state";
 import { Icon, type IconName } from "./Icon";
 import { Settings } from "./Settings";
-import { OperatorTurn, TimelineRow } from "./Timeline";
+import { TimelineList } from "./Timeline";
 
 const phaseLabels: Record<TaskPhase, string> = {
   idle: "待执行",
@@ -128,7 +128,7 @@ export function AgentPanel({
   const socketSnapshotReadyRef = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
+  useEffect(() => {
     const input = inputRef.current;
     if (!input) return;
     input.style.height = "auto";
@@ -140,12 +140,16 @@ export function AgentPanel({
   const sequence = useRef(0);
   const busy = globalBusy || isBusy(phase);
   const timeline = useMemo(() => buildTimeline(events), [events]);
-  const liveActionKey = [...timeline]
-    .reverse()
-    .find(
-      (item) =>
-        item.kind === "action" && !item.done && item.error === undefined,
-    )?.key;
+  const liveActionKey = useMemo(
+    () =>
+      [...timeline]
+        .reverse()
+        .find(
+          (item) =>
+            item.kind === "action" && !item.done && item.error === undefined,
+        )?.key,
+    [timeline],
+  );
   const updatePhase = (value: TaskPhase) => {
     phaseRef.current = value;
     setPhase(value);
@@ -765,9 +769,12 @@ export function AgentPanel({
         });
     }
   };
-  const truncated =
-    events.length >= MAX_EVENTS ||
-    events.some((event) => event.text?.startsWith(TRUNCATED));
+  const truncated = useMemo(
+    () =>
+      events.length >= MAX_EVENTS ||
+      events.some((event) => event.text?.startsWith(TRUNCATED)),
+    [events],
+  );
   const empty = !record && !pendingTitle;
   const heroEmpty = empty && !globalBusy;
   const hideHeader =
@@ -783,9 +790,10 @@ export function AgentPanel({
     (globalTaskId
       ? globalTaskId !== record.id
       : !!globalTaskTitle && globalTaskTitle !== submittedTask);
-  const activity = [...events]
-    .reverse()
-    .find((event) => event.type === "activity");
+  const activity = useMemo(
+    () => [...events].reverse().find((event) => event.type === "activity"),
+    [events],
+  );
   const activityLabel =
     activity?.text ??
     (
@@ -1017,25 +1025,13 @@ export function AgentPanel({
         >
           {!empty && (
             <div className="log">
-              <ol className="timeline">
-                <OperatorTurn text={submittedTask} />
-                {truncated && (
-                  <li className="tl tl-note">
-                    <div className="tl-body">较早记录已截断。</div>
-                  </li>
-                )}
-                {timeline.map((item) => (
-                  <TimelineRow
-                    key={item.key}
-                    item={item}
-                    live={
-                      busy &&
-                      item.kind === "action" &&
-                      item.key === liveActionKey
-                    }
-                  />
-                ))}
-              </ol>
+              <TimelineList
+                items={timeline}
+                submittedTask={submittedTask}
+                truncated={truncated}
+                busy={busy}
+                liveActionKey={liveActionKey}
+              />
             </div>
           )}
         </div>

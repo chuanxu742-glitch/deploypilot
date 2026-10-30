@@ -197,8 +197,10 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, onDelta func(s
 }
 
 func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(string)) (result *ChatResult, err error) {
-	// Once a stream has begun, retrying would replay already displayed text.
-	// Tools only run after the entire response has passed validation.
+	// Most stream errors are not retried once content has reached the UI. The
+	// one explicit upstream_busy case may retry the same model request; this
+	// attempt's assembler is local and discarded, and tools only run after the
+	// entire response has passed validation. Previously streamed text can repeat.
 	started := false
 	defer func() {
 		if err != nil && started {
@@ -255,6 +257,12 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 			return nil, fmt.Errorf("invalid model stream event: %w", err)
 		}
 		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			var providerErr struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(chunk.Error, &providerErr) == nil && providerErr.Code == upstreamBusyCode {
+				return nil, &upstreamBusyError{code: providerErr.Code}
+			}
 			return nil, fmt.Errorf("model stream error: %s", c.Redact(string(chunk.Error)))
 		}
 		if len(chunk.Choices) == 0 {
@@ -297,6 +305,14 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 // request the same turn again; already-streamed text may then appear twice.
 var ErrStreamInterrupted = errors.New("model stream interrupted")
 
+const upstreamBusyCode = "upstream_busy"
+
+type upstreamBusyError struct{ code string }
+
+func (e *upstreamBusyError) Error() string {
+	return fmt.Sprintf("模型服务持续繁忙，请稍后继续当前任务或更换模型（code: %s）", e.code)
+}
+
 // IsStreamInterrupted reports whether err is a transport interruption.
 func IsStreamInterrupted(err error) bool { return errors.Is(err, ErrStreamInterrupted) }
 
@@ -320,9 +336,9 @@ func IsContextOverflow(err error) bool {
 	return false
 }
 
-// streamError is not retried inside StreamChat: once text has streamed, an
-// automatic replay would duplicate it. Interrupted streams are additionally
-// marked with ErrStreamInterrupted so the agent loop can decide to retry.
+// streamError prevents replaying partial replies for ordinary stream failures.
+// The exact upstream_busy provider code is checked before this wrapper by
+// retryable; its incomplete assembled result is discarded before retry.
 type streamError struct{ err error }
 
 func (e *streamError) Error() string { return e.err.Error() }
@@ -362,8 +378,15 @@ func (e *apiError) Error() string {
 
 // retryable reports whether an error warrants a retry.
 func retryable(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var be *upstreamBusyError
+	if errors.As(err, &be) {
+		return true
+	}
 	var se *streamError
-	if errors.As(err, &se) || errors.Is(err, ErrStreamInterrupted) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.As(err, &se) || errors.Is(err, ErrStreamInterrupted) {
 		return false
 	}
 	var ae *apiError
@@ -390,7 +413,8 @@ func WithRetryWait(ctx context.Context, callback func(attempt int, delay time.Du
 	return context.WithValue(ctx, retryWaitContextKey{}, callback)
 }
 
-// withRetry retries requests that failed before a response stream began.
+// withRetry retries pre-stream failures and stream responses with the exact
+// upstream_busy provider code.
 // Delays grow exponentially from 2s to 60s (about three minutes at the limit),
 // or use the provider's Retry-After when it asks for longer.
 func (c *Client) withRetry(ctx context.Context, fn func() error) error {
@@ -398,8 +422,17 @@ func (c *Client) withRetry(ctx context.Context, fn func() error) error {
 	delay := retryBaseDelay
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		err = fn()
-		if err == nil || !retryable(err) || attempt == maxAttempts {
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !retryable(err) || attempt == maxAttempts {
 			return err
 		}
 		wait := delay

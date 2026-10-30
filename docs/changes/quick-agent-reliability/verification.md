@@ -122,3 +122,30 @@ Luna 另执行了 19 项模拟 API/WS 的浏览器交互检查并回报通过；
 | 实际网页链路可用 | Luna `DP_BROWSER_INTEGRATION=1 go test ./internal/server -run '^TestConversationFrontendBrowserIntegration$' -count=1 -timeout=90s -v`，主代理核对原始日志及两张截图 | 退出码 0，包 5.323s、Chrome 3.13s，一次通过；问候仅一轮模型请求，无失败卡；提问刷新恢复并可继续，实际失败仍红，清理后输入可执行，品牌图片真实加载。日志 `.probe-tmp/conversation-real-backend.log`；截图 `.probe-tmp/ui-screenshots/conversation-desktop.png`、`conversation-mobile.png`。 |
 
 联调使用本地脚本模型和执行器替身，验证的是程序与网页路径，没有调用线上模型或真实部署。源码修复准备提交推送并按已有发布授权构建 v0.4.5；发布位置与下一步以 issue #1 为准，不把本地测试说成用户正在运行的进程已更新。
+
+## 追加：SSE upstream_busy
+
+使用用户给出的原始繁忙错误载荷构造本地 SSE 响应。改前主代理回归测试退出码 1，直接得到相同 `model stream error`，证明流内繁忙没有走退避。修复只识别结构化 code=upstream_busy，沿用现有 8 次上限和可取消等待；不放宽其他流错误，不自动切换模型。错误耗尽后给出中文恢复建议和固定 code，避免转发上游原始消息/元数据。
+
+| 结论 | 验证方式 | 实际结果与局限 |
+|---|---|---|
+| 繁忙恢复、上限和取消通过 | Luna `go test ./internal/llm -count=1`，主代理读取原始日志与差异 | 退出码 0，5.748s。覆盖同请求重试、局部文本/工具丢弃、8 次耗尽、回调取消、未知流错误和 401 不重试、最终错误不带密钥。日志 `.probe-tmp/upstream-busy-llm-tests.log`。 |
+| 已完成命令不重放，半截工具不执行 | 主代理 `go test ./internal/agent -run '^TestUpstreamBusyRetriesOnlyCurrentTurn$' -count=1 -timeout=25s` | 改前退出码 1；改后退出码 0，6.347s。安装只调用一次，繁忙回复中的 write_file 未执行，重试请求与原请求完全一致，之后健康检查与成功 finish 正常，等待状态可见。日志 `.probe-tmp/upstream-busy-agent-red.log`、`upstream-busy-agent-green.log`。 |
+| Agent 整包与静态检查通过 | 主代理 `go test ./internal/agent -count=1 -timeout=90s`、`go vet ./internal/llm ./internal/agent` | 两者退出码 0，Agent 包 27.430s。日志 `.probe-tmp/upstream-busy-agent-tests.log`、`upstream-busy-go-vet.log`。 |
+
+没有请求 BAILU AI 真实服务，不能确认上游恢复时间或当前容量。用户随后指出输入文字慢，当前保留此补丁，与前端输入性能修复一起构建发布；发布位置以 issue #1 为准。
+
+## 追加：输入响应与终端历史落盘
+
+用户明确反馈为键入文字回显慢，不是输入被禁用。代码核对发现：每次草稿更新会重新渲染全部日志行；终端快照的文件操作会占用 PTY 读取/广播共用的锁。前者隔离为 memo 日志子树并缓存事件派生值，自动高度不再使用 layout effect；后者以 persistMu 串行快照和写盘，历史锁只用于短暂取值和复制。定时任务先等持久化锁再清待处理标记，避免慢盘排队累积；读取 ready 文件后检查 CWD 未被 Run 更新，避免旧值覆盖。
+
+| 结论 | 验证方式 | 实际结果与局限 |
+|---|---|---|
+| 本机有界历史负载下键入工作减少 | Luna 在同一 Chrome fixture 优化前/后各构建、执行 `node tests/workspace-input-perf.browser.cjs`，200 条各 2 KiB 文本，键入 100 字符 | 命令均退出码 0，字符/行数均为 100/200。基线总 421ms，input 处理均值 1.031ms、p95 1.40ms；优化后总 373ms，均值 0.808ms、p95 1.30ms。原始输出保留在 Luna 本轮工具记录。仅一次本地对照，不能断言用户现场大延迟由此造成或已消失；早先 1.6MiB 超出真实任务上限的观测不作为结论依据。 |
+| 草稿、中文输入法、焦点与自动高度保留 | Luna 优化后一次 `node tests/workspace.browser.cjs` | 退出码 0，既有桌面/手机、输入高度/focus/IME 等检查通过；输出在 Luna 工具记录。 |
+| 慢盘不再占实时历史/广播锁 | Luna `go test ./internal/server -run 'TestSharedShell(RestoresDirectoryAndHistory|PersistenceDoesNotHoldHistoryLock)$' -count=1 -timeout=30s`，主代理核对差异与原始日志 | 退出码 0，最终 3.537s。人为阻塞 snapshot writer 时追加、订阅和广播可继续；解阻塞后关闭完成，最新 CWD/输出落盘；原历史恢复测试通过。首轮 fixture 的订阅顺序错误已修正，日志保留全过程：`.probe-tmp/terminal-persist-tests.log`。不是用户磁盘耗时测量。 |
+| 前端单测与最终构建通过 | 主代理 `npm --prefix web test`、`npm --prefix web run build` | 退出码均 0，单测 32/32，构建包含品牌图标。日志 `.probe-tmp/input-web-unit.log`、`input-web-build.log`。 |
+| 整合后实际网页链路通过 | 主代理一次运行三项 `FrontendBrowserIntegration`、`WaitForFrontendBrowserIntegration`、`ConversationFrontendBrowserIntegration` | 退出码 0，包 17.274s，三项分别 4.02s、8.07s、2.93s；覆盖真实 Go/WS/Chrome、刷新/续聊/停止/等待/认证与普通问答。模型/执行器为本地替身。日志 `.probe-tmp/input-browser-integration.log`。 |
+| 受影响 Go 包静态检查通过 | 主代理 `go vet ./internal/llm ./internal/agent ./internal/server` | 退出码 0，无诊断。日志 `.probe-tmp/input-go-vet.log`。 |
+
+终端字符仍来自目标 Shell 的真实回显，需要网络往返。本次没有测量用户设备、浏览器或隧道 RTT，不增加假本地回显、不移除屏幕阅读支持、不因性能反馈改变任务输入锁。准备将繁忙恢复和两处性能改进一起发布 v0.4.6，当前正在运行的用户实例未被替换或重启。

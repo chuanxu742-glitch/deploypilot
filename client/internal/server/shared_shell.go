@@ -72,25 +72,27 @@ type terminalSnapshot struct {
 // The shell belongs to the application, not a WebSocket. Both manual input and
 // Agent commands use this PTY; disconnecting a viewer only removes its subscription.
 type sharedShell struct {
-	mu           sync.Mutex
-	runMu        sync.Mutex
-	inputMu      sync.Mutex
-	session      pty.Session
-	dir          string
-	cwd          string
-	chunks       [][]byte
-	bytes        int
-	subscribers  map[*shellFeed]struct{}
-	output       func(string)
-	marker       string
-	markerTail   string
-	displayTail  string
-	completed    chan struct{}
-	dead         chan struct{}
-	closeOnce    sync.Once
-	persistTimer *time.Timer
-	readyPath    string
-	readyEnabled bool
+	mu            sync.Mutex
+	persistMu     sync.Mutex
+	runMu         sync.Mutex
+	inputMu       sync.Mutex
+	session       pty.Session
+	dir           string
+	cwd           string
+	chunks        [][]byte
+	bytes         int
+	subscribers   map[*shellFeed]struct{}
+	output        func(string)
+	marker        string
+	markerTail    string
+	displayTail   string
+	completed     chan struct{}
+	dead          chan struct{}
+	closeOnce     sync.Once
+	persistTimer  *time.Timer
+	readyPath     string
+	readyEnabled  bool
+	writeSnapshot func(string, []byte) error
 }
 
 func newSharedShell(dir string) (*sharedShell, error) {
@@ -208,7 +210,9 @@ func (s *sharedShell) read() {
 				s.fanOutLocked(visible)
 			}
 			if s.persistTimer == nil {
-				s.persistTimer = time.AfterFunc(250*time.Millisecond, func() { s.mu.Lock(); defer s.mu.Unlock(); s.persistLocked(); s.persistTimer = nil })
+				s.persistTimer = time.AfterFunc(250*time.Millisecond, func() {
+					s.persist(true)
+				})
 			}
 			s.mu.Unlock()
 		}
@@ -248,14 +252,50 @@ func (s *sharedShell) fanOutLocked(data []byte) {
 	}
 }
 
-func (s *sharedShell) persistLocked() {
-	if data, err := os.ReadFile(s.readyPath); err == nil && len(data) > 0 {
-		s.cwd = string(data)
+// persist serializes snapshot-and-write operations so a stale snapshot cannot
+// overwrite a newer one. Lock order is persistMu then mu; callers must release
+// mu before calling this method. Scheduled calls keep persistTimer set while
+// waiting for persistMu, so a slow writer cannot accumulate timer goroutines.
+// Ready-file reads, marshal, and disk sync run without mu held.
+func (s *sharedShell) persist(scheduled bool) {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+
+	s.mu.Lock()
+	if scheduled {
+		s.persistTimer = nil
 	}
-	data, err := json.Marshal(terminalSnapshot{Cwd: s.cwd, Chunks: s.chunks})
-	if err == nil {
-		_ = atomicPrivateWrite(filepath.Join(s.dir, "terminal.json"), data)
+	cwdAtRead, readyPath := s.cwd, s.readyPath
+	s.mu.Unlock()
+
+	var readyCwd string
+	if data, err := os.ReadFile(readyPath); err == nil && len(data) > 0 {
+		readyCwd = string(data)
 	}
+	s.mu.Lock()
+	if readyCwd != "" && s.cwd == cwdAtRead {
+		s.cwd = readyCwd
+	}
+	snapshot := terminalSnapshot{Cwd: s.cwd, Chunks: cloneChunks(s.chunks)}
+	s.mu.Unlock()
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return
+	}
+	write := s.writeSnapshot
+	if write == nil {
+		write = atomicPrivateWrite
+	}
+	_ = write(filepath.Join(s.dir, "terminal.json"), data)
+}
+
+func cloneChunks(chunks [][]byte) [][]byte {
+	cloned := make([][]byte, len(chunks))
+	for i, chunk := range chunks {
+		cloned[i] = append([]byte(nil), chunk...)
+	}
+	return cloned
 }
 func atomicPrivateWrite(path string, data []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".history-*")
@@ -357,15 +397,16 @@ func (s *sharedShell) Close() error {
 		err = s.session.Close()
 		<-s.dead
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		if s.persistTimer != nil {
 			s.persistTimer.Stop()
+			s.persistTimer = nil
 		}
-		s.persistLocked()
 		for feed := range s.subscribers {
 			close(feed.output)
 			delete(s.subscribers, feed)
 		}
+		s.mu.Unlock()
+		s.persist(false)
 	})
 	return err
 }
@@ -579,11 +620,11 @@ try {
 			}
 			s.mu.Lock()
 			s.cwd = result.Cwd
-			s.persistLocked()
+			s.mu.Unlock()
+			s.persist(false)
 			captureMu.Lock()
 			output := captured.String()
 			captureMu.Unlock()
-			s.mu.Unlock()
 			output = terminalEscapes.ReplaceAllString(output, "")
 			if runtime.GOOS == "windows" {
 				output = result.Output

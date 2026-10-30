@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   isFailedFinal,
   type ActionItem,
@@ -84,7 +84,11 @@ export function TimelineRow({
           <div className="tl-body">
             <div className="final-card">
               <strong>
-                {needsInput ? "等待补充信息" : failed ? "任务未完成" : "任务结束"}
+                {needsInput
+                  ? "等待补充信息"
+                  : failed
+                    ? "任务未完成"
+                    : "任务结束"}
               </strong>
               {item.event.text && <p>{item.event.text}</p>}
             </div>
@@ -95,6 +99,39 @@ export function TimelineRow({
   }
   return null;
 }
+
+// Draft changes must not reconcile the entire history on each keystroke.
+export const TimelineList = memo(function TimelineList({
+  items,
+  submittedTask,
+  truncated,
+  busy,
+  liveActionKey,
+}: {
+  items: TimelineItem[];
+  submittedTask?: string;
+  truncated: boolean;
+  busy: boolean;
+  liveActionKey?: string | number;
+}) {
+  return (
+    <ol className="timeline">
+      <OperatorTurn text={submittedTask} />
+      {truncated && (
+        <li className="tl tl-note">
+          <div className="tl-body">较早记录已截断。</div>
+        </li>
+      )}
+      {items.map((item) => (
+        <TimelineRow
+          key={item.key}
+          item={item}
+          live={busy && item.kind === "action" && item.key === liveActionKey}
+        />
+      ))}
+    </ol>
+  );
+});
 
 function actionState(item: ActionItem, live: boolean) {
   if (item.error !== undefined) return { tone: "bad", label: "出错" };
