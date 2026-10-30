@@ -685,6 +685,189 @@ const { spawn } = require("node:child_process");
       );
       await context.close();
     });
+    test("long running task keeps the composer compact and shows command timing and outcomes", async () => {
+      const { page, context, s } = await setup([]);
+      await page.setViewportSize({ width: 1280, height: 720 });
+      const taskId = "long-command-task";
+      const longTitle = `PROMPT-HEAD ${"检查当前部署环境并逐步收集详细证据。".repeat(1400)} PROMPT-TAIL`;
+      const now = Date.now();
+      const current = record(taskId, "running", [
+        { id: 1, taskId, type: "user", text: longTitle },
+        ...Array.from({ length: 9 }, (_, i) => ({
+          id: i + 2,
+          taskId,
+          type: "status",
+          step: i + 1,
+          text: `正在执行步骤 ${i + 1}`,
+        })),
+        {
+          id: 11,
+          taskId,
+          type: "tool_call",
+          tool: "run_command",
+          callId: "cancel-command",
+          command: "curl -fsS http://127.0.0.1/ready",
+          timestamp: now - 374000,
+          timeoutSeconds: 600,
+        },
+      ]);
+      current.title = longTitle;
+      s.current = current;
+      s.records.unshift(current);
+      s.state = "running";
+      s.snapshot();
+      const input = page.locator("#task-input");
+      await input.waitFor();
+      const runningMeta = page.locator(".action-running-meta");
+      await runningMeta.getByText(/已运行/).waitFor();
+      const contextText = await page.locator(".composer-context").innerText();
+      assert.ok(!contextText.includes("PROMPT-TAIL"));
+      assert.ok(
+        (await page.locator(".composer-context").boundingBox()).height < 100,
+      );
+      assert.ok(
+        (await page.locator(".agent-scroll").boundingBox()).height > 100,
+      );
+      assert.match(await runningMeta.innerText(), /已运行 6分\d+秒/);
+      assert.match(await runningMeta.innerText(), /限时 10分0秒/);
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.ok(
+        await runningMeta.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        "elapsed time and timeout remain inside the command card on a narrow viewport",
+      );
+
+      const socket = s.sockets.at(-1);
+      socket.send(
+        JSON.stringify({
+          id: 12,
+          taskId,
+          type: "tool_done",
+          tool: "run_command",
+          callId: "cancel-command",
+          exitCode: -1,
+          state: "cancelled",
+          durationMs: 374000,
+          text: "命令已取消。完整输出已保存。",
+          logPath: "C:/private/command.log",
+        }),
+      );
+      const cancelled = page
+        .locator(".tl-action")
+        .filter({ hasText: "已取消" });
+      await cancelled.waitFor();
+      assert.equal(await cancelled.locator(".tl-error").count(), 0);
+      assert.equal(
+        await cancelled.locator(".action-duration").innerText(),
+        "6分14秒",
+      );
+      assert.equal(
+        await cancelled.locator(".action-log-path code").innerText(),
+        "C:/private/command.log",
+      );
+      assert.equal(await input.getAttribute("placeholder"), "补充当前任务");
+      assert.equal(
+        await page.getByRole("button", { name: "停止任务" }).isEnabled(),
+        true,
+        "tool cancellation does not release the task before cleanup acknowledgement",
+      );
+
+      socket.send(
+        JSON.stringify({
+          id: 13,
+          taskId,
+          type: "tool_call",
+          tool: "run_command",
+          callId: "timeout-command",
+          command: "sleep 5",
+          timestamp: Date.now(),
+          timeoutSeconds: 2,
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          id: 14,
+          taskId,
+          type: "error",
+          callId: "timeout-command",
+          state: "timeout",
+          text: "命令已超过 2 秒时限",
+          logPath: "C:/private/timeout.log",
+        }),
+      );
+      const timeout = page.locator(".tl-action").filter({ hasText: "超时" });
+      await timeout.waitFor();
+      assert.equal(await timeout.locator('.chip[data-tone="bad"]').count(), 1);
+      assert.equal(
+        await timeout.locator(".action-log-path code").innerText(),
+        "C:/private/timeout.log",
+      );
+
+      socket.send(
+        JSON.stringify({
+          id: 15,
+          taskId,
+          type: "tool_call",
+          tool: "run_command",
+          callId: "ordinary-failure",
+          command: "false",
+          timestamp: Date.now(),
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          id: 16,
+          taskId,
+          type: "tool_done",
+          callId: "ordinary-failure",
+          exitCode: -1,
+          durationMs: 1000,
+          text: "命令输出包含 context canceled，但后台没有标记任务取消。",
+        }),
+      );
+      const ordinaryFailure = page
+        .locator(".tl-action")
+        .filter({ hasText: "退出码 -1" });
+      await ordinaryFailure.waitFor();
+      assert.equal(
+        await ordinaryFailure.locator('.chip[data-tone="bad"]').count(),
+        1,
+      );
+
+      socket.send(
+        JSON.stringify({
+          id: 17,
+          taskId,
+          type: "tool_call",
+          tool: "run_command",
+          callId: "legacy-cancel",
+          command: "curl old-endpoint",
+          timestamp: Date.now(),
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          id: 18,
+          taskId,
+          type: "error",
+          callId: "legacy-cancel",
+          text: "exit=-1 error=command cancelled: context canceled output:[full output: C:/private/legacy.log]",
+        }),
+      );
+      const legacyCancelled = page
+        .locator(".tl-action")
+        .filter({ hasText: "C:/private/legacy.log" });
+      await legacyCancelled.waitFor();
+      assert.equal(await legacyCancelled.locator(".tl-error").count(), 0);
+      assert.equal(
+        await legacyCancelled.getByText("命令已取消", { exact: true }).count(),
+        1,
+      );
+      assert.equal(
+        await legacyCancelled.locator(".action-log-path code").innerText(),
+        "C:/private/legacy.log",
+      );
+      await context.close();
+    });
     let failures = 0;
     for (const [name, fn] of tests) {
       try {

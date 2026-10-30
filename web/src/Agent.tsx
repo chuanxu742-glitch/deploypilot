@@ -61,6 +61,14 @@ const formatDuration = (seconds: number) =>
     ? `${seconds}秒`
     : `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, "0")}秒`;
 
+function ContextTaskTitle({ text }: { text: string }) {
+  return (
+    <span className="composer-context-title" title={text}>
+      {text}
+    </span>
+  );
+}
+
 type RecoverySubmission = {
   originKey: string;
   requestId: string;
@@ -874,20 +882,20 @@ export function AgentPanel({
         <div className="composer-context" role="status">
           {!record ? (
             <>
-              后台任务“{globalTaskTitle || "其他会话任务"}
-              ”正在运行；这份草稿仍属于新会话，不会发给后台任务。
+              后台任务仍在运行：
+              <ContextTaskTitle text={globalTaskTitle || "其他会话任务"} />
+              这份草稿仍属于新会话，不会发给后台任务。
             </>
           ) : otherGlobalTask ? (
             <>
-              后台任务“{globalTaskTitle || "其他会话任务"}
-              ”正在运行；这份草稿仍属于所选会话“{submittedTask}
-              ”，不会发给后台任务。
+              后台任务仍在运行：
+              <ContextTaskTitle text={globalTaskTitle || "其他会话任务"} />
+              这份草稿仍属于所选会话：
+              <ContextTaskTitle text={submittedTask || "当前会话"} />
+              不会发给后台任务。
             </>
           ) : (
-            <>
-              当前后台任务仍在运行；结束后可手动将这份输入发送为“
-              {globalTaskTitle || submittedTask || "当前任务"}”的补充消息。
-            </>
+            <>当前后台任务仍在运行；任务结束后可手动发送这份补充消息。</>
           )}
           要开始独立任务，请等待结束后点“新建任务”。
         </div>

@@ -789,6 +789,15 @@ input::placeholder,
   color: var(--red-11);
   overflow-wrap: anywhere;
 }
+.action-result-note {
+  margin: 8px 0 0;
+  color: var(--gray-11);
+  overflow-wrap: anywhere;
+}
+.action-log-path code {
+  user-select: text;
+  overflow-wrap: anywhere;
+}
 .follow-button {
   position: absolute;
   right: 16px;
@@ -855,6 +864,14 @@ input::placeholder,
   font-size: 14px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+.composer-context-title {
+  display: inline-block;
+  max-width: min(16rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 .composer > .feedback {
   margin: 8px 0 0;

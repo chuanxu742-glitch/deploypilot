@@ -15,6 +15,8 @@ export interface AgentEvent {
   hostname?: string;
   cwd?: string;
   callId?: string;
+  timeoutSeconds?: number;
+  logPath?: string;
   requestId?: string;
 }
 
@@ -108,6 +110,8 @@ export interface ActionItem {
   progress?: string;
   done?: AgentEvent;
   error?: string;
+  errorState?: string;
+  logPath?: string;
 }
 export type TimelineItem =
   | {
@@ -197,8 +201,11 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
         : open && !open.done && open.error === undefined
           ? open
           : undefined;
-      if (target) target.error = event.text ?? "";
-      else {
+      if (target) {
+        target.error = event.text ?? "";
+        target.errorState = event.state;
+        target.logPath = event.logPath ?? target.logPath;
+      } else {
         open = null;
         items.push({ kind: "error", key, event });
       }

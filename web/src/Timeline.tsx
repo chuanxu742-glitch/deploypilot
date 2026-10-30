@@ -134,6 +134,9 @@ export const TimelineList = memo(function TimelineList({
 });
 
 function actionState(item: ActionItem, live: boolean) {
+  if (isCancelledAction(item)) return { tone: "", label: "已取消" };
+  if (item.errorState === "timeout" || item.done?.state === "timeout")
+    return { tone: "bad", label: "超时" };
   if (item.error !== undefined) return { tone: "bad", label: "出错" };
   if (item.done) {
     const code = item.done.exitCode;
@@ -145,19 +148,76 @@ function actionState(item: ActionItem, live: boolean) {
   return { tone: "", label: "未确认" };
 }
 
+function isCancelledAction(item: ActionItem): boolean {
+  if (item.errorState === "cancelled" || item.done?.state === "cancelled")
+    return true;
+  if (item.errorState || item.done?.state) return false;
+  // Older saved command errors lack a state; keep the compatibility match precise.
+  return isLegacyCancelledDiagnostic(item.error ?? item.done?.text ?? "");
+}
+
+function isLegacyCancelledDiagnostic(text: string): boolean {
+  return /^exit=-1\s+error=command cancelled:\s*context canceled(?:\s+output:|\r?\n|$)/i.test(
+    text,
+  );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.floor(ms))}毫秒`;
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}小时${minutes}分${seconds}秒`;
+  if (minutes) return `${minutes}分${seconds}秒`;
+  return `${seconds}秒`;
+}
+
 function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
   const [expanded, setExpanded] = useState<boolean | null>(null);
+  const [now, setNow] = useState(Date.now);
   const outputRef = useRef<HTMLPreElement>(null);
+  const startedAtRef = useRef(item.call?.timestamp ?? Date.now());
   const tool = item.call?.tool ?? item.done?.tool ?? "";
   const target = item.call?.command ?? item.call?.path ?? item.done?.path;
   const state = actionState(item, live);
   const output = item.output ?? "";
+  const running = live && !item.done && item.error === undefined;
+  const cancelled = isCancelledAction(item);
+  const legacyCancellation =
+    cancelled &&
+    !item.errorState &&
+    !item.done?.state &&
+    isLegacyCancelledDiagnostic(item.error ?? item.done?.text ?? "");
+  const timedOut =
+    item.errorState === "timeout" || item.done?.state === "timeout";
+  const legacyLogPath = legacyCancellation
+    ? (item.error ?? item.done?.text ?? "").match(
+        /\[full output:\s*([^\]]+)\]/i,
+      )?.[1]
+    : undefined;
+  const logPath = item.logPath ?? item.done?.logPath ?? legacyLogPath;
+  const resultText = cancelled
+    ? legacyCancellation
+      ? "命令已取消"
+      : (item.done?.text ?? item.error ?? "命令已取消")
+    : timedOut
+      ? (item.done?.text ?? item.error ?? "命令执行超时")
+      : undefined;
   // Live and failed actions stay open until the user chooses otherwise.
-  const open = expanded ?? (live || item.error !== undefined);
+  const open = expanded ?? (live || cancelled || item.error !== undefined);
   useEffect(() => {
     if (open && live && outputRef.current)
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
   }, [output, open, live]);
+  useEffect(() => {
+    if (!running) return;
+    startedAtRef.current = item.call?.timestamp ?? Date.now();
+    const tick = () => setNow(Date.now());
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [running, item.call?.timestamp]);
 
   return (
     <li className="tl tl-action">
@@ -178,11 +238,23 @@ function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
             {state.label}
           </span>
           {item.done?.durationMs !== undefined && (
-            <span className="action-duration">{item.done.durationMs} ms</span>
+            <span className="action-duration">
+              {formatDuration(item.done.durationMs)}
+            </span>
           )}
           <Icon name="chevron" size={14} />
         </summary>
         <div className="action-body">
+          {running && tool === "run_command" && (
+            <div className="action-evidence action-running-meta" role="status">
+              <span>已运行 {formatDuration(now - startedAtRef.current)}</span>
+              {item.call?.timeoutSeconds !== undefined && (
+                <span>
+                  限时 {formatDuration(item.call.timeoutSeconds * 1000)}
+                </span>
+              )}
+            </div>
+          )}
           {(item.call?.hostname || item.call?.cwd) && (
             <div className="action-evidence">
               {item.call.hostname && <span>{item.call.hostname}</span>}
@@ -200,8 +272,20 @@ function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
               <pre ref={outputRef}>{output}</pre>
             </div>
           )}
-          {item.error !== undefined && item.error !== "" && (
-            <p className="action-error">{item.error}</p>
+          {item.error !== undefined &&
+            item.error !== "" &&
+            !cancelled &&
+            !timedOut && <p className="action-error">{item.error}</p>}
+          {resultText && (
+            <p className={cancelled ? "action-result-note" : "action-error"}>
+              {resultText}
+            </p>
+          )}
+          {logPath && (
+            <div className="action-evidence action-log-path">
+              <span>完整日志</span>
+              <code>{logPath}</code>
+            </div>
           )}
         </div>
       </details>

@@ -1,6 +1,6 @@
 # Agent 六项快速优化
 
-2026-10-30，当前状态：v0.4.6 已发布；根据工具检查后被误判失败的反馈，已撤去“使用过工具必须 finish”的门槛，普通答复与已验证部署成功分开，相关 Agent/网页联调通过，准备发布 v0.4.7。下文保留过程记录，最新计划和证据见 implementation-plan.md、verification.md 追加段；实际发布状态以 issue #1 为准。
+2026-10-30，当前状态：v0.4.7 已发布；根据长任务截图修复重复任务提示、工具运行信息与取消/超时呈现，相关定向检查通过，准备发布 v0.4.8。下文保留过程记录，最新计划和证据见 implementation-plan.md、verification.md 追加段；实际发布状态以 issue #1 为准。
 
 分支：`chore/agent-reliability-cleanup`
 

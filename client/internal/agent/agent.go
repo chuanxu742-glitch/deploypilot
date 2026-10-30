@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -31,22 +32,24 @@ const (
 
 // Event is a single streamed update.
 type Event struct {
-	ID         int64     `json:"id,omitempty"`
-	TaskID     string    `json:"taskId,omitempty"`
-	Type       EventType `json:"type"`
-	Text       string    `json:"text,omitempty"`
-	Tool       string    `json:"tool,omitempty"`
-	Command    string    `json:"command,omitempty"`
-	Path       string    `json:"path,omitempty"`
-	ExitCode   int       `json:"exitCode,omitempty"`
-	Success    bool      `json:"success,omitempty"`
-	Step       int       `json:"step,omitempty"`
-	State      string    `json:"state,omitempty"`
-	Timestamp  int64     `json:"timestamp,omitempty"` // server Unix time in milliseconds
-	CallID     string    `json:"callId,omitempty"`
-	Hostname   string    `json:"hostname,omitempty"`
-	Cwd        string    `json:"cwd,omitempty"`
-	DurationMs *int64    `json:"durationMs,omitempty"`
+	ID             int64     `json:"id,omitempty"`
+	TaskID         string    `json:"taskId,omitempty"`
+	Type           EventType `json:"type"`
+	Text           string    `json:"text,omitempty"`
+	Tool           string    `json:"tool,omitempty"`
+	Command        string    `json:"command,omitempty"`
+	Path           string    `json:"path,omitempty"`
+	ExitCode       int       `json:"exitCode,omitempty"`
+	Success        bool      `json:"success,omitempty"`
+	Step           int       `json:"step,omitempty"`
+	State          string    `json:"state,omitempty"`
+	Timestamp      int64     `json:"timestamp,omitempty"` // server Unix time in milliseconds
+	CallID         string    `json:"callId,omitempty"`
+	Hostname       string    `json:"hostname,omitempty"`
+	Cwd            string    `json:"cwd,omitempty"`
+	DurationMs     *int64    `json:"durationMs,omitempty"`
+	TimeoutSeconds int       `json:"timeoutSeconds,omitempty"`
+	LogPath        string    `json:"logPath,omitempty"`
 }
 
 // MarshalJSON preserves explicit tool/task outcomes and command exit code zero.
@@ -345,6 +348,7 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bool, msg llm.Message) {
 	name := tc.Function.Name
 	var started time.Time
+	var failureState, failureLogPath string
 	announced, completed := false, false
 	emit := func(e Event) {
 		e.CallID = tc.ID
@@ -373,10 +377,17 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		return llm.Message{Role: llm.RoleTool, ToolCallID: tc.ID, Name: name, Content: content}
 	}
 	failure := func(content string) llm.Message {
-		if announced && !completed {
-			emit(Event{Type: EventToolDone, Tool: name, ExitCode: -1, Success: false})
+		if failureState == "" {
+			failureState = toolTerminationState(ctx.Err())
 		}
-		emit(Event{Type: EventError, Tool: name, Text: content})
+		if announced && !completed {
+			emit(Event{Type: EventToolDone, Tool: name, ExitCode: -1, Success: false, State: failureState, LogPath: failureLogPath})
+		}
+		display := content
+		if failureLogPath != "" {
+			display = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(display), CommandLogReference(failureLogPath)))
+		}
+		emit(Event{Type: EventError, Tool: name, Text: display, State: failureState, LogPath: failureLogPath})
 		return result("error: " + content)
 	}
 	if err := ctx.Err(); err != nil {
@@ -410,7 +421,11 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			return false, failure("BLOCKED: " + reason + ". Choose a safer approach.")
 		}
 
-		if err := announce(Event{Type: EventToolCall, Tool: name, Command: args.Command, Step: step}); err != nil {
+		timeoutSeconds := args.TimeoutSeconds
+		if timeoutSeconds <= 0 {
+			timeoutSeconds = 600
+		}
+		if err := announce(Event{Type: EventToolCall, Tool: name, Command: args.Command, Step: step, TimeoutSeconds: timeoutSeconds}); err != nil {
 			return false, failure(err.Error())
 		}
 		timeout := time.Duration(args.TimeoutSeconds) * time.Second
@@ -419,9 +434,23 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			emit(Event{Type: EventOutput, Text: chunk})
 		})
 		a.audit.Append(AuditEntry{Kind: "command", Command: args.Command, ExitCode: exit, Output: out})
-		emit(Event{Type: EventToolDone, Tool: name, ExitCode: exit, Success: err == nil && exit == 0, Step: step})
+		failureState = toolTerminationState(err)
+		failureLogPath = commandOutputLogPath(out)
+		emit(Event{Type: EventToolDone, Tool: name, ExitCode: exit, Success: err == nil && exit == 0, Step: step, State: failureState, LogPath: failureLogPath})
 		if err != nil {
-			return false, failure(fmt.Sprintf("exit=%d error=%s\noutput:\n%s", exit, err.Error(), out))
+			diagnostic := fmt.Sprintf("exit=%d error=%s\noutput:\n%s", exit, err.Error(), out)
+			if failureState != "" {
+				display := "命令已取消"
+				if failureState == "timeout" {
+					display = fmt.Sprintf("命令已超过 %d 秒时限", timeoutSeconds)
+				}
+				message := failure(display)
+				// Keep the original error and output available to the model without
+				// exposing implementation errors as the operator's status label.
+				message.Content = result("error: " + diagnostic).Content
+				return false, message
+			}
+			return false, failure(diagnostic)
 		}
 		if exit != 0 {
 			return false, failure(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out))
@@ -444,6 +473,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		})
 		a.audit.Append(AuditEntry{Kind: "wait_for", Note: args.Kind + ": " + args.Target, Output: out})
 		if err != nil {
+			failureState = toolTerminationState(err)
 			return false, failure(err.Error())
 		}
 		emit(Event{Type: EventOutput, Text: out})
@@ -547,6 +577,29 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 	}
 }
 
+func toolTerminationState(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return ""
+}
+
+// Executors append the authoritative log reference after command output. Use
+// the last reference so an earlier line of process output cannot replace it.
+func commandOutputLogPath(output string) string {
+	var path string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[full output: ") && strings.HasSuffix(line, "]") {
+			path = strings.TrimSuffix(strings.TrimPrefix(line, "[full output: "), "]")
+		}
+	}
+	return path
+}
+
 // emptyReplyNudge requests a useful response after an empty model turn.
 const emptyReplyNudge = "本轮没有有效答复；若还需操作请继续使用工具，否则给出自然语言结果。若要报告部署成功，必须先完成真实检查，再调用 finish(success=true) 并引用验证证据；任务确实失败时调用 finish(success=false)；如果缺少操作员才能提供的信息，调用 finish(outcome=needs_input, success=false) 并提出具体问题。"
 
@@ -581,6 +634,7 @@ var systemPrompt = strings.TrimSpace(`
 - 预计较慢的命令（大模型下载、pip 安装大包、构建镜像）设置 timeout_seconds（最长 3600），或改为后台执行后轮询进度。
 - 非零退出码不一定是故障：grep 没匹配、which/test 未找到都会返回 1，根据输出判断。
 - 等待网址可访问、日志出现某句话或进程退出时用 wait_for，一次调用在程序内等待，不要反复 sleep/curl 占用模型轮次。
+- Windows 网络探测请显式使用 curl.exe --connect-timeout 10 --max-time 20，或 Invoke-WebRequest -Uri <网址> -Method Head -UseBasicParsing -TimeoutSec 20。Windows PowerShell 中 curl 可能是 Invoke-WebRequest 别名，不要使用 curl -I 这类会触发缺少必填参数交互的写法；网络探测应设置短时限。
 - 已开始任务缺少操作员才能提供的信息（密码、令牌、版本选择等）时，调用 finish(outcome:"needs_input", success:false)，在 summary 里写清具体问题。这表示等待补充信息，不表示任务失败；操作员可以继续该任务并补充信息，已有进展会保留。
 
 部署知识:

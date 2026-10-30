@@ -161,3 +161,18 @@ Luna 另执行了 19 项模拟 API/WS 的浏览器交互检查并回报通过；
 | 受影响包静态检查通过 | 主代理 `go vet ./internal/agent ./internal/server` | 退出码 0，无诊断，日志 `.probe-tmp/natural-reply-go-vet.log`。 |
 
 模型为脚本替身，文件使用隔离的临时目录，未读取用户实际工作目录、未请求付费模型。前端源代码没有变化，沿用 v0.4.6 的构建资产；联调实际验证它兼容中性 JSON。准备提交推送并按既有授权发布 v0.4.7，运行实例不由本次源码操作自动替换。
+
+## 追加：长任务界面与工具终止状态
+
+两张实际截图分别暴露了运行提示重复展开整条长任务，以及取消后只显示普通错误/内部诊断/大毫秒数的问题。主代理只读核对用户指定运行实例的相关任务和终端尾部，确认其二进制为 v0.4.7；当前 PyPI 探测在 PowerShell 的 Invoke-WebRequest 别名中等待 Uri 必填参数。该执行等待与界面缺陷同时存在，不把界面修复当成九步部署已经通过。私人任务/终端记录不复制进仓库。
+
+本轮调整：同任务提示不再引用任务全文；其他草稿归属使用单行截断标题。命令事件提供 timeoutSeconds、logPath 和取消/超时状态，模型仍保留原始诊断；页面独立显示日志位置与人类可读耗时，取消为中性、超时/实际失败仍明确。活动计时只由当前命令行更新，390px 下可换行。旧记录的取消兼容只匹配执行器明确诊断前缀，不以任意 context canceled 文本或 exit=-1 猜测。输入仍等待后台清理确认才解锁。
+
+| 结论 | 验证方式 | 实际结果与局限 |
+|---|---|---|
+| 命令状态及元数据可用 | 主代理先运行 TestCommandEndStatesAndTimeoutMetadata，再实现并运行该测试和 Agent 整包 | 改前退出码 1，缺少时限字段；改后定向退出码 0，4.592s，整包退出码 0，33.988s。覆盖取消、超时、普通 -1 失败、默认/显式时限、独立日志和模型诊断保留。日志 `.probe-tmp/tool-status-red.log`、`tool-status-green.log`、`tool-status-agent-tests.log`。 |
+| 前端长任务状态通过 | Luna 最终 `npm test`、`npm run build`、`node tests/task-interactions.browser.cjs` | 最终退出码均 0，33 项单测、20 项浏览器场景通过。包括长任务不撑满提示、日志留高、390px 活动卡、取消中性及独立日志、超时/普通失败保持错误、精确旧记录兼容、清理前不释放。初期字号检查/取消卡展开和 fixture 选择器问题已处理，最终源文件/构建已冻结；原始结果在 Luna 本轮工具记录。 |
+| 实际前后端仍可用 | 主代理 `DP_BROWSER_INTEGRATION=1 go test ./internal/server -run '^(TestWaitForFrontendBrowserIntegration|TestConversationFrontendBrowserIntegration)$' -count=1 -timeout=90s -v` | 退出码 0，包 15.122s，对话 3.82s、等待 8.50s。覆盖实际 Go/WS/Chrome 的停止、清理、刷新、续聊、读取后自然答复与状态恢复；模型为本地替身。日志 `.probe-tmp/tool-status-browser-integration.log`。 |
+| Agent 静态检查通过 | 主代理 `go vet ./internal/agent` | 退出码 0，无诊断，日志 `.probe-tmp/tool-status-go-vet.log`。 |
+
+Windows 网络探测另补充 curl.exe 或显式 Uri/短超时的提示；这是模型指导，不是通用禁止交互的执行器约束。Windows 工具实时输出、任意交互提示的自动中断和日志轮转识别仍未在本轮实现。未替用户执行九步部署，未停止/更新其进程；准备沿已有授权提交发布 v0.4.8，现场与模型效果待更新后复测。

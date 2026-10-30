@@ -139,6 +139,54 @@ test("tool error after completion remains attached to its call and overrides suc
   if (action?.kind === "action") assert.equal(action.error, "清理失败");
 });
 
+test("command timeout and cancellation metadata stay on their action rows", () => {
+  const callId = "command-state";
+  const timeline = buildTimeline([
+    {
+      type: "tool_call",
+      tool: "run_command",
+      callId,
+      timestamp: 100,
+      timeoutSeconds: 600,
+    },
+    {
+      type: "tool_done",
+      callId,
+      exitCode: -1,
+      state: "cancelled",
+      durationMs: 374000,
+      logPath: "C:/private/command.log",
+      text: "命令已取消",
+    },
+  ]);
+  const action = timeline.find((item) => item.kind === "action");
+  assert.equal(action?.kind, "action");
+  if (action?.kind === "action") {
+    assert.equal(action.call?.timeoutSeconds, 600);
+    assert.equal(action.call?.timestamp, 100);
+    assert.equal(action.done?.state, "cancelled");
+    assert.equal(action.done?.logPath, "C:/private/command.log");
+    assert.equal(action.done?.durationMs, 374000);
+  }
+
+  const timedOut = buildTimeline([
+    { type: "tool_call", tool: "run_command", callId },
+    {
+      type: "error",
+      callId,
+      state: "timeout",
+      text: "命令已超过 600 秒时限",
+      logPath: "C:/private/timeout.log",
+    },
+  ]).find((item) => item.kind === "action");
+  assert.equal(timedOut?.kind, "action");
+  if (timedOut?.kind === "action") {
+    assert.equal(timedOut.errorState, "timeout");
+    assert.equal(timedOut.error, "命令已超过 600 秒时限");
+    assert.equal(timedOut.logPath, "C:/private/timeout.log");
+  }
+});
+
 test("wait_for progress replaces prior activity and stays linked to its action", () => {
   const taskId = "task-wait";
   const callId = "call-wait";
