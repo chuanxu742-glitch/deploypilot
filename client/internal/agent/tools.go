@@ -127,7 +127,7 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolFinish,
-				Description: "For an already started task, call finish to report completion or failure. If a specific operator answer is required, use outcome=needs_input with success=false and ask a concrete question in summary. Ordinary greetings and answers that need no machine operation should be natural-language replies without finish. On success, cite real successful run_command or wait_for call IDs in verification_call_ids; run the final verification immediately before finish, with no later changes.",
+				Description: "For an already started task, call finish to report explicitly verified deployment success or a real failure. After reading files or checking the environment, you may explain results in a normal natural-language reply without finish. If an operator answer is required, use outcome=needs_input with success=false and ask a concrete question in summary. On success, cite real successful run_command or wait_for call IDs in verification_call_ids; run the final verification immediately before finish, with no later changes.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{

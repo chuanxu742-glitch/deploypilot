@@ -149,3 +149,15 @@ Luna 另执行了 19 项模拟 API/WS 的浏览器交互检查并回报通过；
 | 受影响 Go 包静态检查通过 | 主代理 `go vet ./internal/llm ./internal/agent ./internal/server` | 退出码 0，无诊断。日志 `.probe-tmp/input-go-vet.log`。 |
 
 终端字符仍来自目标 Shell 的真实回显，需要网络往返。本次没有测量用户设备、浏览器或隧道 RTT，不增加假本地回显、不移除屏幕阅读支持、不因性能反馈改变任务输入锁。准备将繁忙恢复和两处性能改进一起发布 v0.4.6，当前正在运行的用户实例未被替换或重启。
+
+## 追加：工具检查后不再强制 finish
+
+主人指出 hello.py 检查已得出结果，却附带“未调用 finish，任务未确认完成”。先前只允许无工具对话自然结束，确实把工具使用与失败判定错误绑定。现撤去该门槛：所有完整且非空的自然回复都中性结束本轮，不需要按命令类型猜测是否只读；明确成功仍由 finish(success=true) 关联真实证据。中性 reply/needs_input 的 JSON 不再带任务 success 字段；旧失败记录及显式失败仍保持。连续空回复才提醒一次，之后说明未取得有效答复，不再说缺 finish。
+
+| 结论 | 验证方式 | 实际结果与局限 |
+|---|---|---|
+| Agent 回复与验证语义通过 | Luna `go test ./internal/agent -count=1`，主代理读取日志与差异 | 退出码 0，28.376s。覆盖工具使用/Resume 后自然答复、hello.py 读取后解释、重复空回复、JSON 中性标记与既有成功验证/真实错误检查。日志 `.probe-tmp/natural-reply-agent-tests.log`。 |
+| 实际网页中的 hello.py 场景通过 | Luna `DP_BROWSER_INTEGRATION=1 go test ./internal/server -run '^TestConversationFrontendBrowserIntegration$' -count=1 -timeout=90s -v`，主代理核对原始日志 | 一次通过，退出码 0，包 5.836s、Chrome 3.56s。临时目录实际 read_file 内容传入模型；正常回答无失败卡、不再请求 finish，刷新后保留、输入可继续；原问候/补充信息/真实失败场景也保留，共 5 次模型请求（既有 3 次加读取/回答 2 次）。日志 `.probe-tmp/read-reply-browser.log`。 |
+| 受影响包静态检查通过 | 主代理 `go vet ./internal/agent ./internal/server` | 退出码 0，无诊断，日志 `.probe-tmp/natural-reply-go-vet.log`。 |
+
+模型为脚本替身，文件使用隔离的临时目录，未读取用户实际工作目录、未请求付费模型。前端源代码没有变化，沿用 v0.4.6 的构建资产；联调实际验证它兼容中性 JSON。准备提交推送并按既有授权发布 v0.4.7，运行实例不由本次源码操作自动替换。

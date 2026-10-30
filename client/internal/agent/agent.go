@@ -49,8 +49,8 @@ type Event struct {
 	DurationMs *int64    `json:"durationMs,omitempty"`
 }
 
-// MarshalJSON preserves explicit success/failure and command exit code zero,
-// without giving unrelated status events or file operations a process exit code.
+// MarshalJSON preserves explicit tool/task outcomes and command exit code zero.
+// Neutral final replies have no success/failure; file tools have no process exit code.
 func (e Event) MarshalJSON() ([]byte, error) {
 	type wireEvent Event
 	var code *int
@@ -58,7 +58,7 @@ func (e Event) MarshalJSON() ([]byte, error) {
 	if e.Type == EventToolDone && e.Tool == toolRunCommand {
 		code = &e.ExitCode
 	}
-	if e.Type == EventToolDone || e.Type == EventFinal {
+	if e.Type == EventToolDone || (e.Type == EventFinal && e.State != "reply" && e.State != "needs_input") {
 		success = &e.Success
 	}
 	return json.Marshal(struct {
@@ -174,31 +174,6 @@ func completeTurn(turn []llm.Message) []llm.Message {
 	return turn
 }
 
-// hasPriorToolUse is conservative across retained turns and compacted history.
-// If compaction has omitted any entries, the run may have used tools, so plain
-// chat cannot silently end a task whose earlier execution evidence was dropped.
-func hasPriorToolUse(window *contextWindow) bool {
-	if window == nil {
-		return false
-	}
-	if window.omitted > 0 {
-		return true
-	}
-	for _, entry := range window.history {
-		if entry.Tool != "" {
-			return true
-		}
-	}
-	for _, turn := range window.turns {
-		for _, message := range turn {
-			if message.Role == llm.RoleTool || len(message.ToolCalls) > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // streamTurn requests one model turn. It retries a connection that dropped
 // mid-response and, when the provider reports a context overflow, compacts to
 // a smaller budget and asks again. budget persists across turns.
@@ -277,7 +252,7 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 	var repetition repetitionGuard
 
 	// Like pi and oh-my-pi, a run has no turn cap by default: it ends with a
-	// direct plain reply, finish, repeated missing-finish responses, failure, or cancellation.
+	// direct plain reply, finish, repeated empty responses, failure, or cancellation.
 	for step := 1; a.maxSteps <= 0 || step <= a.maxSteps; step++ {
 		select {
 		case <-ctx.Done():
@@ -303,27 +278,23 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 
 		if len(res.Message.ToolCalls) == 0 {
 			content := strings.TrimSpace(res.Message.Content)
-			if content != "" && !hasPriorToolUse(window) {
+			if content != "" {
 				window.turns = append(window.turns, turn)
 				a.emit(Event{Type: EventFinal, State: "reply", Text: content, Success: false})
 				a.audit.Append(AuditEntry{Kind: "final", Note: content})
 				return nil
 			}
 			if !nudged {
-				// A natural-language stop is not evidence of deployment success.
-				// Ask once for the existing explicit completion protocol.
+				// Ask once for a valid answer; an empty model response is not a result.
 				nudged = true
-				window.turns = append(window.turns, append(turn, llm.Message{Role: llm.RoleUser, Content: finishReplyNudge}))
+				window.turns = append(window.turns, append(turn, llm.Message{Role: llm.RoleUser, Content: emptyReplyNudge}))
 				continue
 			}
 			window.turns = append(window.turns, turn)
-			if content == "" {
-				content = "模型没有给出总结。请查看上面的执行记录，或换个说法重新下达任务。"
-			}
-			content += "\n\n任务未确认完成：模型未调用 finish，请核对执行结果后再继续。"
+			content = "模型没有返回有效答复。请查看上面的执行记录，或换个说法重新下达任务。"
 			a.emit(Event{Type: EventFinal, Text: content, Success: false})
 			a.audit.Append(AuditEntry{Kind: "final", Note: content})
-			return fmt.Errorf("model stopped without explicit finish")
+			return fmt.Errorf("model returned no valid answer after reminder")
 		}
 
 		// Record the turn whatever happens below, with every call answered, so
@@ -576,9 +547,8 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 	}
 }
 
-// finishReplyNudge requests an explicit outcome once; it is not an independent
-// verifier. The model still owns finish.success and must cite observed results.
-const finishReplyNudge = "你尚未调用 finish。普通问候或无需主机操作的问答应直接自然语言回答，不调用工具或 finish。已开始的任务仍需继续执行，或调用 finish 明确结论；只有缺少操作员才能提供的信息时，才调用 finish outcome=needs_input 且 success=false，并在 summary 提出具体问题。成功时须填写真实验证证据，失败时 success=false，不能只用文字宣称成功。"
+// emptyReplyNudge requests a useful response after an empty model turn.
+const emptyReplyNudge = "本轮没有有效答复；若还需操作请继续使用工具，否则给出自然语言结果。若要报告部署成功，必须先完成真实检查，再调用 finish(success=true) 并引用验证证据；任务确实失败时调用 finish(success=false)；如果缺少操作员才能提供的信息，调用 finish(outcome=needs_input, success=false) 并提出具体问题。"
 
 // systemPrompt encodes the agent's role and deployment know-how.
 var systemPrompt = strings.TrimSpace(`
@@ -588,8 +558,8 @@ var systemPrompt = strings.TrimSpace(`
 - 使用 run_command 执行 shell 命令来检查环境、安装依赖、下载模型、启动服务并验证。先探查再动手，不要臆断。
 - 每一步说明你要做什么、为什么这么做，再调用工具。
 - 遇到报错先读取日志和错误输出，定位根因后再修复，不要盲目重试。
-- 问候、普通问答或无需主机操作的闲聊，直接自然语言回答，不调用工具或 finish。
-- 部署任务已开始后，任务完成或真实失败时调用 finish 总结。缺少只有操作员能提供的信息时，调用 finish(outcome:"needs_input", success:false)，在 summary 里提出具体问题；这表示等待补充信息，不表示任务失败。
+- 问候和普通问答可以直接自然语言回答。若有助于完成请求，可以先检查相关文件或环境，再用自然语言解释结果；不必仅为结束任务而调用 finish。
+- 只有在明确报告部署成功且已完成真实检查时，才调用 finish(success:true) 总结并提供验证证据；任务真实失败时可调用 finish(success:false)。缺少只有操作员能提供的信息时，调用 finish(outcome:"needs_input", success:false)，在 summary 里提出具体问题；这表示等待补充信息，不表示任务失败。
 - 成功完成前执行真实检查（服务接口、健康状态、预期文件等），finish(success=true) 的 verification_call_ids 必须引用 run_command 或 wait_for 返回的 call_id。新的命令或文件修改会使旧验证失效；请把最终检查放在最后。不能只填写一段声称成功的文字。
 - 同一调用连续得到相同结果时换方法，优先读完整日志；不要重复运行无变化的命令。第三次会收到提醒，第四次任务会暂停。
 

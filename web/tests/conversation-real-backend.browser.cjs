@@ -164,8 +164,72 @@ const path = require("node:path");
       animations: "disabled",
     });
 
+    // Read a real temporary fixture file, then let the model end naturally
+    // with a useful reply instead of an explicit finish tool call.
+    await page.getByRole("button", { name: "新建任务", exact: true }).click();
+    await page.locator("#task-input").fill("检查hello.py");
+    await page.getByRole("button", { name: "执行任务", exact: true }).click();
+    await page
+      .locator(".assistant-message")
+      .filter({ hasText: '没有明显问题，hello.py 中是 print("Hello, World!")。' })
+      .waitFor();
+    await page.waitForFunction(async () => {
+      const summaries = await fetch("/api/tasks").then((response) =>
+        response.json(),
+      );
+      const summary = summaries.find((task) => task.title === "检查hello.py");
+      if (!summary || summary.phase !== "finished") return false;
+      const record = await fetch(`/api/tasks/${summary.id}`).then((response) =>
+        response.json(),
+      );
+      return (
+        record.events.some((event) => event.type === "final" && event.state === "reply") &&
+        record.events.some(
+          (event) =>
+            event.type === "tool_call" &&
+            event.tool === "read_file" &&
+            event.path?.endsWith("hello.py"),
+        ) &&
+        record.events.some(
+          (event) => event.type === "tool_done" && event.tool === "read_file" && event.success,
+        )
+      );
+    });
+    await page
+      .getByRole("button", { name: "停止任务", exact: true })
+      .waitFor({ state: "detached" });
+    assert.equal(await page.locator(".final-card").count(), 0);
+    assert.equal(await page.locator(".tl-error").count(), 0);
+    const readAction = page.locator(".tl-action").filter({ hasText: "hello.py" });
+    await readAction.waitFor();
+    assert.match(await readAction.innerText(), /读取文件|已完成/);
+    assert.equal(await (await fetch(`${url}/test/provider-count`)).text(), "5");
+    assert.equal(await (await fetch(`${url}/test/read-output`)).text(), "true");
+
+    const inspected = await getTask("检查hello.py");
+    assert.ok(inspected);
+    await page.reload();
+    await page.locator("#task-input").waitFor();
+    await page
+      .locator(".assistant-message")
+      .filter({ hasText: '没有明显问题，hello.py 中是 print("Hello, World!")。' })
+      .waitFor();
+    assert.equal(await page.locator(".tl-error").count(), 0);
+    await page.locator(".tl-action").filter({ hasText: "hello.py" }).waitFor();
+    assert.equal(await (await fetch(`${url}/test/provider-count`)).text(), "5");
+    assert.equal(
+      await page.locator("#task-input").getAttribute("placeholder"),
+      "继续当前任务（点「新建任务」开始新会话）",
+    );
+    await page.locator("#task-input").fill("确认读取后还能继续");
+    assert.equal(
+      await page.getByRole("button", { name: "执行任务", exact: true }).isEnabled(),
+      true,
+      "natural reply must not leave the task busy after reload",
+    );
+
     console.log(
-      "PASS conversation Go HTTP/WS + Chrome: one-call greeting, needs-input card survives reload and continues, real failure stays red, controls release, brand mark loads",
+      "PASS conversation Go HTTP/WS + Chrome: one-call greeting, needs-input continuation, real failure card, read_file followed by natural reply survives reload without extra model calls or busy state, brand mark loads",
     );
     console.log(`Screenshots: ${screenshotDir}`);
     await context.close();

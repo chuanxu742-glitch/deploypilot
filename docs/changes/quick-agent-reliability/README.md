@@ -1,6 +1,6 @@
 # Agent 六项快速优化
 
-2026-10-30，当前状态：普通对话结束语义与品牌图标已随 v0.4.5 发布，分支提交至 PR #2；流内 upstream_busy 恢复、草稿渲染隔离与终端落盘锁优化已完成相关检查，准备一起发布 v0.4.6。下文保留首版过程记录，最新计划和证据见 implementation-plan.md、verification.md 追加段；实际发布状态以 issue #1 为准。
+2026-10-30，当前状态：v0.4.6 已发布；根据工具检查后被误判失败的反馈，已撤去“使用过工具必须 finish”的门槛，普通答复与已验证部署成功分开，相关 Agent/网页联调通过，准备发布 v0.4.7。下文保留过程记录，最新计划和证据见 implementation-plan.md、verification.md 追加段；实际发布状态以 issue #1 为准。
 
 分支：`chore/agent-reliability-cleanup`
 

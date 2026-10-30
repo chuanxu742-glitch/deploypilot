@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,8 +36,13 @@ func TestConversationFrontendBrowserIntegration(t *testing.T) {
 	}
 	browserProfile := os.Getenv("USERPROFILE")
 	t.Setenv("USERPROFILE", t.TempDir())
+	helloPath := filepath.Join(t.TempDir(), "hello.py")
+	if err := os.WriteFile(helloPath, []byte("print(\"Hello, World!\")\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var requests atomic.Int32
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var readOutputSeen atomic.Bool
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		var chunk any
@@ -54,6 +60,18 @@ func TestConversationFrontendBrowserIntegration(t *testing.T) {
 				"summary": "模拟部署失败：测试服务器无法访问。",
 				"success": false,
 			})
+		case 4:
+			chunk = toolCallChunk("read-hello", "read_file", map[string]any{"path": helloPath})
+		case 5:
+			var modelRequest llm.ChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&modelRequest); err == nil {
+				for _, message := range modelRequest.Messages {
+					if message.Role == llm.RoleTool && strings.Contains(message.Content, `print("Hello, World!")`) {
+						readOutputSeen.Store(true)
+					}
+				}
+			}
+			chunk = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": `没有明显问题，hello.py 中是 print("Hello, World!")。`}, "finish_reason": "stop"}}}
 		default:
 			http.Error(w, "unexpected extra model request", http.StatusInternalServerError)
 			return
@@ -73,13 +91,17 @@ func TestConversationFrontendBrowserIntegration(t *testing.T) {
 		LLM:        llm.New(llm.Config{BaseURL: provider.URL, APIKey: "test-only"}),
 		HistoryDir: t.TempDir(),
 	})
-	srv.newExecutor = func() agent.Executor { return commandExecutor{} }
+	fileReader := agent.NewShellExecutor()
+	srv.newExecutor = func() agent.Executor {
+		return readFileConversationExecutor{commandExecutor: commandExecutor{}, files: fileReader}
+	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}()
 	srv.mux.HandleFunc("/test/provider-count", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, requests.Load()) })
+	srv.mux.HandleFunc("/test/read-output", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, readOutputSeen.Load()) })
 	host := httptest.NewServer(srv.Handler())
 	defer host.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -94,19 +116,35 @@ func TestConversationFrontendBrowserIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal("conversation frontend integration: ", err)
 	}
-	if got := requests.Load(); got != 3 {
-		t.Fatalf("unexpected model calls: got %d, want exactly 3", got)
+	if got := requests.Load(); got != 5 {
+		t.Fatalf("unexpected model calls: got %d, want exactly 5", got)
+	}
+	if !readOutputSeen.Load() {
+		t.Fatal("read_file result was missing from the next model request")
 	}
 }
 
 func finishToolChunk(callID string, args map[string]any) any {
+	return toolCallChunk(callID, "finish", args)
+}
+
+func toolCallChunk(callID, name string, args map[string]any) any {
 	encodedArgs, _ := json.Marshal(args)
 	argumentString, _ := json.Marshal(string(encodedArgs))
 	return map[string]any{"choices": []any{map[string]any{
 		"delta": map[string]any{"tool_calls": []any{map[string]any{
 			"index": 0, "id": callID, "type": "function",
-			"function": map[string]any{"name": "finish", "arguments": json.RawMessage(argumentString)},
+			"function": map[string]any{"name": name, "arguments": json.RawMessage(argumentString)},
 		}}},
 		"finish_reason": "tool_calls",
 	}}}
+}
+
+type readFileConversationExecutor struct {
+	commandExecutor
+	files agent.Executor
+}
+
+func (e readFileConversationExecutor) ReadFile(path string, offset, maxBytes int64) (agent.ReadResult, error) {
+	return e.files.ReadFile(path, offset, maxBytes)
 }

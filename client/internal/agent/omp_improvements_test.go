@@ -96,25 +96,24 @@ func TestPlainReplyWithoutToolUseFinishesAsReplyOnce(t *testing.T) {
 	}
 }
 
-func TestPlainReplyAfterToolUseStillRequiresFinish(t *testing.T) {
+func TestPlainReplyAfterToolUseEndsNormally(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		toolCallSSE("check", toolRunCommand, `{"command":"echo checked"}`),
-		textSSE("already done"),
-		toolCallSSE("finish", toolFinish, `{"summary":"needs operator input","success":false}`),
+		textSSE("检查结果已经整理好。"),
 	})
 	defer srv.Close()
 	emit, events, _ := collectEvents()
 	a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "test"}), Executor: newFakeExec(), Emit: emit})
 	if err := a.Run(context.Background(), "deploy"); err != nil {
-		t.Fatalf("finish(false) should end normally: %v", err)
+		t.Fatalf("plain reply after tool use: %v", err)
 	}
 	final := lastFinal(events)
-	if final == nil || final.State != "" || final.Success || final.Text != "needs operator input" {
-		t.Fatalf("plain reply after tool use bypassed finish: %+v", final)
+	if final == nil || final.State != "reply" || final.Success || final.Text != "检查结果已经整理好。" {
+		t.Fatalf("unexpected reply event: %+v", final)
 	}
 }
 
-func TestResumeWithToolHistoryDoesNotBecomePlainReply(t *testing.T) {
+func TestResumeWithToolHistoryMayEndWithPlainReply(t *testing.T) {
 	first := scriptedLLM(t, []string{toolCallSSE("read", toolReadFile, `{"path":"service.conf"}`)})
 	emit, _, _ := collectEvents()
 	initial := New(Config{LLM: llm.New(llm.Config{BaseURL: first.URL, APIKey: "test"}), Executor: newFakeExec(), MaxSteps: 1, Emit: emit})
@@ -124,10 +123,7 @@ func TestResumeWithToolHistoryDoesNotBecomePlainReply(t *testing.T) {
 	conversation := initial.Conversation()
 	first.Close()
 
-	continued := scriptedLLM(t, []string{
-		textSSE("done"),
-		toolCallSSE("finish", toolFinish, `{"summary":"still needs a final disposition","success":false}`),
-	})
+	continued := scriptedLLM(t, []string{textSSE("我检查过配置文件，继续前需要确认部署目标。")})
 	defer continued.Close()
 	_, resumedEvents, _ := collectEvents()
 	resumed := New(Config{LLM: llm.New(llm.Config{BaseURL: continued.URL, APIKey: "test"}), Executor: newFakeExec(), Resume: conversation, Emit: func(e Event) { (*resumedEvents) = append(*resumedEvents, e) }})
@@ -135,16 +131,16 @@ func TestResumeWithToolHistoryDoesNotBecomePlainReply(t *testing.T) {
 		t.Fatalf("resume: %v", err)
 	}
 	final := lastFinal(resumedEvents)
-	if final == nil || final.State == "reply" || final.Success || final.Text != "still needs a final disposition" {
-		t.Fatalf("resumed task was treated as plain chat: %+v", final)
+	if final == nil || final.State != "reply" || final.Success || final.Text != "我检查过配置文件，继续前需要确认部署目标。" {
+		t.Fatalf("unexpected resumed reply event: %+v", final)
 	}
 }
 
-func TestMissingFinishStopsAfterOneReminder(t *testing.T) {
+func TestRepeatedEmptyReplyStopsAfterOneReminder(t *testing.T) {
 	srv := scriptedLLM(t, []string{
 		toolCallSSE("check", toolRunCommand, `{"command":"echo checked"}`),
-		textSSE("还没有完成"),
-		textSSE("无法继续"),
+		textSSE(""),
+		textSSE(""),
 	})
 	defer srv.Close()
 	emit, events, _ := collectEvents()
@@ -153,8 +149,44 @@ func TestMissingFinishStopsAfterOneReminder(t *testing.T) {
 		t.Fatal("missing finish must not be success")
 	}
 	last := (*events)[len(*events)-1]
-	if last.Type != EventFinal || last.Success || !strings.Contains(last.Text, "无法继续") {
+	if last.Type != EventFinal || last.Success || !strings.Contains(last.Text, "没有返回有效答复") || strings.Contains(last.Text, "未调用 finish") {
 		t.Fatalf("unexpected final: %+v", last)
+	}
+}
+
+type helloFileExec struct{ *fakeExec }
+
+func (f helloFileExec) ReadFile(path string, offset, maxBytes int64) (ReadResult, error) {
+	f.reads = append(f.reads, path)
+	content := "print(\"Hello, World!\")\n"
+	return ReadResult{Content: content, Offset: offset, Size: int64(len(content)), NextOffset: int64(len(content)), EOF: true}, nil
+}
+
+func TestHelloPyReadThenReplyIsNotTaskFailure(t *testing.T) {
+	srv := scriptedLLM(t, []string{
+		toolCallSSE("read", toolReadFile, `{"path":"E:/WORK/test/hello.py"}`),
+		textSSE("hello.py contains a print call for Hello, World."),
+	})
+	defer srv.Close()
+	_, events, _ := collectEvents()
+	exec := helloFileExec{fakeExec: newFakeExec()}
+	a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "test"}), Executor: exec, Emit: func(e Event) { (*events) = append(*events, e) }})
+	if err := a.Run(context.Background(), "检查 E:\\WORK\\test\\hello.py"); err != nil {
+		t.Fatalf("read and explain: %v", err)
+	}
+	if len(exec.reads) != 1 || !strings.Contains(exec.reads[0], "hello.py") {
+		t.Fatalf("reads = %v", exec.reads)
+	}
+	final := lastFinal(events)
+	if final == nil || final.State != "reply" || final.Success || !strings.Contains(final.Text, "Hello, World") {
+		t.Fatalf("unexpected final reply: %+v", final)
+	}
+	wire, err := json.Marshal(*final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), `"success"`) {
+		t.Fatalf("neutral reply serialized success/failure: %s", wire)
 	}
 }
 
