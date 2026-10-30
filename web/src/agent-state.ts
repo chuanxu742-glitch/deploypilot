@@ -52,6 +52,14 @@ export function applyAgentEvent(
   return event.state === "idle" ? "finished" : phase;
 }
 
+/**
+ * Merges a stored event list the same way live streaming does. Records loaded
+ * from the server (snapshot, history, refresh) may hold one event per delta.
+ */
+export function normalizeEvents(events: AgentEvent[]): AgentEvent[] {
+  return events.reduce(mergeEvent, [] as AgentEvent[]);
+}
+
 export function mergeEvent(
   previous: AgentEvent[],
   event: AgentEvent,
@@ -135,7 +143,13 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       else { open = null; items.push({ kind: "error", key, event }); }
     } else if (event.type === "thinking") {
       // Historical wire name: this is public assistant content, not hidden reasoning.
-      items.push({ kind: "message", key, event });
+      // Consecutive deltas form one reply; never render one fragment per line.
+      const last = items[items.length - 1];
+      if (last?.kind === "message") {
+        last.event = { ...last.event, text: (last.event.text ?? "") + (event.text ?? "") };
+      } else {
+        items.push({ kind: "message", key, event });
+      }
     } else {
       open = null;
       if (event.type === "status") items.push({ kind: "note", key, event });

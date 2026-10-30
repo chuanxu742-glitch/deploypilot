@@ -16,6 +16,25 @@ import (
 	"unicode/utf8"
 )
 
+// maxStoredEventText bounds one stored event's text.
+const maxStoredEventText = 32768
+
+// truncatedMarker matches the web UI's TRUNCATED prefix so it shows the notice.
+const truncatedMarker = "…（较早内容已截断）\n"
+
+// keepTailUTF8 keeps the end of s (where command failures appear) within max
+// bytes, on a rune boundary, prefixed with a truncation marker.
+func keepTailUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := len(s) - (max - len(truncatedMarker))
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return truncatedMarker + s[cut:]
+}
+
 // truncateUTF8 shortens s to at most max bytes without splitting a rune, so a
 // persisted/streamed event never ends in an invalid byte sequence.
 func truncateUTF8(s string, max int) string {
@@ -184,10 +203,24 @@ func (s *Server) emitTask(task *taskRecord, event agent.Event) {
 	task.NextID++
 	event.ID = task.NextID
 	event.TaskID = task.ID
-	if len(event.Text) > 32768 {
-		event.Text = truncateUTF8(event.Text, 32768)
+	if len(event.Text) > maxStoredEventText {
+		event.Text = truncateUTF8(event.Text, maxStoredEventText)
 	}
-	task.Events = append(task.Events, event)
+	// Streaming arrives as many small deltas. Store consecutive deltas of the
+	// same kind (and same command, for output) as one event, so a reloaded or
+	// finished task shows whole messages instead of one fragment per line, and
+	// fragments cannot crowd tool calls out of the bounded history. Live
+	// viewers still receive every delta below.
+	merged := false
+	if n := len(task.Events); n > 0 && (event.Type == agent.EventThinking || event.Type == agent.EventOutput) {
+		if last := &task.Events[n-1]; last.Type == event.Type && last.CallID == event.CallID {
+			last.Text = keepTailUTF8(last.Text+event.Text, maxStoredEventText)
+			merged = true
+		}
+	}
+	if !merged {
+		task.Events = append(task.Events, event)
+	}
 	if len(task.Events) > 512 {
 		task.Events = task.Events[len(task.Events)-512:]
 	}

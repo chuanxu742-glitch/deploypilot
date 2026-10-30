@@ -6,6 +6,7 @@ import {
   defaultContinue,
   isFailedFinal,
   mergeEvent,
+  normalizeEvents,
   MAX_EVENTS,
   TRUNCATED,
   type ActionItem,
@@ -126,7 +127,7 @@ export function AgentPanel({
     setRecord(normalized);
     const received = normalized?.events ?? [];
     seenIdsRef.current = new Set(received.flatMap((event) => event.id === undefined ? [] : [`${event.taskId ?? normalized?.id ?? ""}:${event.id}`]));
-    const tail = received.slice(-MAX_EVENTS).map((event) => ({ ...event, taskId: event.taskId ?? normalized?.id }));
+    const tail = normalizeEvents(received.map((event) => ({ ...event, taskId: event.taskId ?? normalized?.id }))).slice(-MAX_EVENTS);
     setEvents(tail);
     const nextPhase: TaskPhase = serverState === "running" || serverState === "stopping"
       ? serverState

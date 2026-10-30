@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/deploypilot/deploypilot/internal/agent"
 	"github.com/gorilla/websocket"
 )
 
@@ -121,5 +122,48 @@ func TestTruncateUTF8ASCIIUnchanged(t *testing.T) {
 	}
 	if got := truncateUTF8(s, 5); got != "hello" {
 		t.Fatalf("ASCII truncation = %q, want %q", got, "hello")
+	}
+}
+
+func TestStreamingDeltasAreStoredAsOneEvent(t *testing.T) {
+	srv := New(Options{})
+	task := &taskRecord{ID: "t", Events: []agent.Event{}}
+	srv.tasks = []*taskRecord{task}
+	for _, part := range []string{"有的", "，当前", "电脑已安装 Pyth", "on 3.11.9。"} {
+		srv.emitTask(task, agent.Event{Type: agent.EventThinking, Text: part})
+	}
+	srv.emitTask(task, agent.Event{Type: agent.EventToolCall, Tool: "run_command", CallID: "c1"})
+	srv.emitTask(task, agent.Event{Type: agent.EventOutput, Text: "line 1\n", CallID: "c1"})
+	srv.emitTask(task, agent.Event{Type: agent.EventOutput, Text: "line 2\n", CallID: "c1"})
+	srv.emitTask(task, agent.Event{Type: agent.EventThinking, Text: "下一段"})
+	if len(task.Events) != 4 {
+		t.Fatalf("events=%d, want 4 (reply, call, output, reply): %+v", len(task.Events), task.Events)
+	}
+	if task.Events[0].Text != "有的，当前电脑已安装 Python 3.11.9。" {
+		t.Fatalf("reply not merged: %q", task.Events[0].Text)
+	}
+	if task.Events[2].Text != "line 1\nline 2\n" {
+		t.Fatalf("output not merged: %q", task.Events[2].Text)
+	}
+	if task.Events[3].Text != "下一段" {
+		t.Fatal("a new reply after a tool call must stay separate")
+	}
+}
+
+func TestMergedOutputKeepsTailWithinLimit(t *testing.T) {
+	srv := New(Options{})
+	task := &taskRecord{ID: "t", Events: []agent.Event{}}
+	srv.tasks = []*taskRecord{task}
+	chunk := strings.Repeat("构建日志", 1000) // 12 KB per delta
+	for i := 0; i < 5; i++ {
+		srv.emitTask(task, agent.Event{Type: agent.EventOutput, Text: chunk})
+	}
+	srv.emitTask(task, agent.Event{Type: agent.EventOutput, Text: "FATAL_END"})
+	got := task.Events[0].Text
+	if len(task.Events) != 1 || len(got) > maxStoredEventText {
+		t.Fatalf("events=%d len=%d", len(task.Events), len(got))
+	}
+	if !strings.HasSuffix(got, "FATAL_END") || !strings.HasPrefix(got, truncatedMarker) || !utf8.ValidString(got) {
+		t.Fatal("merged output lost its tail, marker or UTF-8 validity")
 	}
 }
