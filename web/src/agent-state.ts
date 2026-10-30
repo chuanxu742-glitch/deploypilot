@@ -15,6 +15,7 @@ export interface AgentEvent {
   hostname?: string;
   cwd?: string;
   callId?: string;
+  requestId?: string;
 }
 
 export type TaskPhase =

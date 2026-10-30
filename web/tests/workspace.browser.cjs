@@ -41,6 +41,12 @@ const { spawn } = require("node:child_process");
       viewport: { width: 1440, height: 1000 },
       deviceScaleFactor: 1,
     });
+    if (process.env.DP_BROWSER_ARTIFACT_DIR) {
+      const artifactDir = path.resolve(root, process.env.DP_BROWSER_ARTIFACT_DIR);
+      require("node:fs").mkdirSync(artifactDir, { recursive: true });
+      const capture = page.screenshot.bind(page);
+      page.screenshot = (options) => capture({ ...options, path: path.join(artifactDir, path.basename(options.path)) });
+    }
     page.setDefaultTimeout(7000);
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     const copyTerminalLine = async (shortcut, expected) => {
@@ -93,7 +99,7 @@ const { spawn } = require("node:child_process");
         currentTask.phase = "finished";
         currentTask.endedAt = Date.now();
       }
-      sendAgentMessage({ type: "run_state", state });
+      sendAgentMessage({ type: "run_state", state, ...(currentTask ? { taskId: currentTask.id } : {}) });
       sendTerminalControl({ type: "agent_state", state });
     };
     const sendTaskEvent = (event, socket = agentSocket) => {
@@ -105,10 +111,10 @@ const { spawn } = require("node:child_process");
       record.events.push(complete);
       sendAgentMessage(complete, socket);
     };
-    const startTask = (title, socket) => {
+    const startTask = (title, socket, requestId) => {
       starts++;
       const id = `task-${++taskSequence}`;
-      currentTask = { id, title, startedAt: Date.now(), phase: "running", events: [] };
+      currentTask = { id, title, startedAt: Date.now(), phase: "running", events: [], requestId };
       taskHistory.push(currentTask);
       eventSequences.set(id, 0);
       agentState = "running";
@@ -204,7 +210,7 @@ const { spawn } = require("node:child_process");
       socket.onMessage((data) => {
         const message = JSON.parse(data);
         if (message.type === "start") {
-          startTask(message.task, socket);
+          startTask(message.task, socket, message.requestId);
         }
         if (message.type === "stop") {
           setAgentState("stopping");
@@ -528,11 +534,11 @@ const { spawn } = require("node:child_process");
     assert.equal(await commandDetails.evaluate((el) => el.open), false, "execution evidence can be collapsed as a unit");
     await commandDetails.locator("summary").click();
     assert.equal(await page.locator(".action-output pre").isVisible(), true);
-    await page.getByPlaceholder("准备下一条任务").fill("下一步检查服务");
-    await page.getByPlaceholder("准备下一条任务").press('Enter');
+    await page.getByPlaceholder("补充当前任务").fill("下一步检查服务");
+    await page.getByPlaceholder("补充当前任务").press('Enter');
     assert.ok((await page.locator('#task-input').inputValue()).includes('\n'), 'Enter while preparing a draft during execution inserts a newline');
     assert.equal(await page.getByRole("button", { name: "执行任务" }).isEnabled(), false);
-    await page.getByPlaceholder("准备下一条任务").press("Control+Enter");
+    await page.getByPlaceholder("补充当前任务").press("Control+Enter");
     assert.equal(starts, 1, "drafting during a run cannot start another task");
     await page.screenshot({
       path: path.resolve("docs/changes/ui-task-experience/task-running.png"),

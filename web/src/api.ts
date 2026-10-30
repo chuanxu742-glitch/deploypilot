@@ -15,6 +15,12 @@ export function notifySessionExpired(): void {
   sessionExpiredHandler?.();
 }
 
+async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init);
+  if (response.status === 401) notifySessionExpired();
+  return response;
+}
+
 export function wsURL(path: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}${path}`;
@@ -39,6 +45,7 @@ export interface TaskSummary {
   startedAt: number;
   endedAt?: number;
   phase: "running" | "stopping" | "finished" | "interrupted";
+  requestId?: string;
 }
 
 export interface TaskRecord extends TaskSummary {
@@ -55,19 +62,19 @@ export interface AgentSnapshot {
 }
 
 export async function listTasks(signal?: AbortSignal): Promise<TaskSummary[]> {
-  const response = await fetch("/api/tasks", { signal });
+  const response = await authenticatedFetch("/api/tasks", { signal });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
 export async function getTask(id: string, signal?: AbortSignal): Promise<TaskRecord> {
-  const response = await fetch(`/api/tasks/${encodeURIComponent(id)}`, { signal });
+  const response = await authenticatedFetch(`/api/tasks/${encodeURIComponent(id)}`, { signal });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
 export async function machineInfo(): Promise<MachineInfo> {
-  const res = await fetch("/api/machine");
+  const res = await authenticatedFetch("/api/machine");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -107,6 +114,37 @@ export async function checkSession(): Promise<boolean> {
   return res.ok;
 }
 
+let disconnectSessionCheck: Promise<boolean> | null = null;
+
+/**
+ * Returns false only for an HTTP 401, after notifying the app; other responses,
+ * network failures, and the four-second timeout remain eligible for reconnect.
+ * Concurrent socket failures share one probe.
+ */
+export async function checkSessionAfterDisconnect(): Promise<boolean> {
+  if (!disconnectSessionCheck) {
+    disconnectSessionCheck = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4_000);
+      try {
+        const response = await fetch("/api/session", { signal: controller.signal });
+        if (response.status === 401) {
+          notifySessionExpired();
+          return false;
+        }
+        return true;
+      } catch {
+        return true;
+      } finally {
+        clearTimeout(timeout);
+      }
+    })().finally(() => {
+      disconnectSessionCheck = null;
+    });
+  }
+  return disconnectSessionCheck;
+}
+
 let authentication: Promise<boolean> | null = null;
 /** Share in-flight pairing: React development effects must not consume the token twice. */
 export function authenticate(): Promise<boolean> {
@@ -114,9 +152,22 @@ export function authenticate(): Promise<boolean> {
     authentication = (async () => {
       const token = readTokenFromHash();
       if (!token) return checkSession();
-      await pair(token);
-      clearHash();
-      return true;
+      if (await checkSession()) {
+        clearHash();
+        return true;
+      }
+      try {
+        await pair(token);
+        clearHash();
+        return true;
+      } catch (pairError) {
+        // The one-time token may already have been consumed by this browser.
+        if (await checkSession()) {
+          clearHash();
+          return true;
+        }
+        throw pairError;
+      }
     })().finally(() => {
       authentication = null;
     });
@@ -136,7 +187,7 @@ export interface LLMStatus {
 }
 
 export async function llmStatus(): Promise<LLMStatus> {
-  const res = await fetch("/api/llm/status");
+  const res = await authenticatedFetch("/api/llm/status");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -145,7 +196,7 @@ export async function setLLMConfig(cfg: {
   apiKey?: string;
   model?: string;
 }, signal?: AbortSignal): Promise<LLMStatus> {
-  const res = await fetch("/api/llm/config", {
+  const res = await authenticatedFetch("/api/llm/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(cfg),
@@ -156,7 +207,7 @@ export async function setLLMConfig(cfg: {
 }
 
 export async function listModels(signal?: AbortSignal): Promise<string[]> {
-  const res = await fetch("/api/llm/models", { signal });
+  const res = await authenticatedFetch("/api/llm/models", { signal });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `HTTP ${res.status}`);

@@ -48,16 +48,14 @@ export function App() {
         if (active) setAuth({ kind: ok ? "authed" : "unauthed" });
       })
       .catch((error) => {
-        if (active) setAuth({ kind: "error", message: String(error) });
+        if (active) setAuth({ kind: "error", message: authErrorMessage(error) });
       });
     return () => {
       active = false;
     };
   }, []);
 
-  // When the server reports the session has expired (a 4401 WebSocket close),
-  // drop back to the pairing gate so the operator can scan the fresh QR the
-  // client reprints, instead of staring at an endless "reconnecting" state.
+  // HTTP and WebSocket layers report expiry here so the operator can pair again.
   useEffect(() => {
     onSessionExpired(() => setAuth({ kind: "unauthed" }));
     return () => onSessionExpired(null);
@@ -212,13 +210,23 @@ function renderGate(auth: AuthState) {
           </span>
           <h2>配对失败</h2>
           <p className="gate-error">{auth.message}</p>
-          <p className="muted">
-            配对链接只能使用一次，10 分钟内有效。请在目标机器重启
-            DeployPilot，获取新的链接。
-          </p>
         </>
       );
     default:
       return null;
   }
+}
+
+function authErrorMessage(error: unknown): string {
+  const message = String(error);
+  if (message.includes("pair failed: HTTP 401")) {
+    return "配对链接无效、已使用或已过期。请扫描目标机器当前显示的二维码。";
+  }
+  if (message.includes("pair failed: HTTP 409")) {
+    return "目标机器已有其他活动会话，请在该会话结束后重试。";
+  }
+  if (message.includes("Failed to fetch") || message.includes("NetworkError") || message.includes("网络")) {
+    return "无法连接目标机器，请检查网络后重试。";
+  }
+  return message;
 }

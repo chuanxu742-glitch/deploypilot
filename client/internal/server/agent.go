@@ -16,6 +16,9 @@ type agentClientMsg struct {
 	Task string `json:"task"`
 	// ContinueFrom, when set on start, resumes that task's conversation.
 	ContinueFrom string `json:"continueFrom,omitempty"`
+	// RequestID identifies this submission so reconnecting clients can match it
+	// against the accepted task record without replaying the start command.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // The WebSocket observes the server-owned task. Closing a viewer never cancels it.
@@ -76,8 +79,12 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		case "stop":
 			s.stopTask()
 		case "start":
-			if reason := s.startTask(msg.Task, owner.Value, msg.ContinueFrom); reason != "" {
-				data, _ := json.Marshal(agent.Event{Type: agent.EventError, Text: reason})
+			if reason := s.startTaskWithRequestID(msg.Task, owner.Value, msg.ContinueFrom, msg.RequestID); reason != "" {
+				rejection := map[string]any{"type": agent.EventError, "text": reason}
+				if msg.RequestID != "" {
+					rejection["requestId"] = msg.RequestID
+				}
+				data, _ := json.Marshal(rejection)
 				send(data)
 				s.taskMu.Lock()
 				state := "idle"
@@ -86,7 +93,8 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 				}
 				s.taskMu.Unlock()
 				if state == "idle" {
-					send([]byte(`{"type":"run_state","state":"idle"}`))
+					data, _ := json.Marshal(runStateMessage("idle", nil))
+					send(data)
 				}
 			}
 		}

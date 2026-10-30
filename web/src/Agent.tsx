@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { getTask, listTasks, llmStatus, notifySessionExpired, wsURL, SESSION_EXPIRED_CODE, type AgentSnapshot, type LLMStatus, type TaskRecord, type TaskSummary } from "./api";
+import { checkSessionAfterDisconnect, getTask, listTasks, llmStatus, notifySessionExpired, wsURL, SESSION_EXPIRED_CODE, type AgentSnapshot, type LLMStatus, type TaskRecord, type TaskSummary } from "./api";
 import {
   applyAgentEvent,
   buildTimeline,
@@ -62,6 +62,16 @@ const formatDuration = (seconds: number) =>
     ? `${seconds}秒`
     : `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, "0")}秒`;
 
+type RecoverySubmission = {
+  originKey: string;
+  requestId: string;
+  submittedText: string;
+  alternateDraft: string;
+  displayed: "submitted" | "alternate";
+  autoRestored: boolean;
+  reason: "uncertain" | "rejected";
+};
+
 export function AgentPanel({
   onPhaseChange,
   version,
@@ -72,11 +82,18 @@ export function AgentPanel({
   const [status, setStatus] = useState<LLMStatus | null>(null);
   const [statusError, setStatusError] = useState("");
   const [task, setTask] = useState("");
+  const taskValueRef = useRef("");
+  const draftsRef = useRef(new Map<string, string>());
   const [record, setRecord] = useState<TaskRecord | null>(null);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [connectionState, setConnectionState] = useState<"connecting" | "connected" | "disconnected">("connecting");
+  const [snapshotReady, setSnapshotReady] = useState(false);
   const [pendingTitle, setPendingTitle] = useState("");
   const [phase, setPhase] = useState<TaskPhase>("idle");
+  const [globalBusy, setGlobalBusy] = useState(false);
+  const [globalRunState, setGlobalRunState] = useState<"idle" | "running" | "stopping">("idle");
+  const [globalTaskTitle, setGlobalTaskTitle] = useState("");
+  const [globalTaskId, setGlobalTaskId] = useState<string | null>(null);
   const phaseRef = useRef<TaskPhase>("idle");
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [follow, setFollow] = useState(true);
@@ -87,12 +104,17 @@ export function AgentPanel({
   const recordRef = useRef<TaskRecord | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const newTaskModeRef = useRef(false);
-  const pendingStartRef = useRef(false);
-  const lastSubmittedRef = useRef("");
+  const historyRequestRef = useRef<{ sequence: number; controller: AbortController | null }>({ sequence: 0, controller: null });
+  const pendingStartRef = useRef<{ requestId: string; text: string; continueFrom?: string } | null>(null);
+  const activeTaskIdRef = useRef<string | null>(null);
+  const [recoverySubmission, setRecoverySubmission] = useState<RecoverySubmission | null>(null);
+  const recoverySubmissionRef = useRef<RecoverySubmission | null>(null);
+  const retryActionRef = useRef<(() => void) | null>(null);
   const [continuableId, setContinuableId] = useState("");
   const seenIdsRef = useRef(new Set<string>());
   const retryDelayRef = useRef(300);
   const hasSnapshotRef = useRef(false);
+  const socketSnapshotReadyRef = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -105,23 +127,103 @@ export function AgentPanel({
   const pending = useRef<AgentEvent[]>([]);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const sequence = useRef(0);
-  const busy = isBusy(phase);
+  const busy = globalBusy || isBusy(phase);
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const liveActionKey = [...timeline].reverse().find((item) => item.kind === "action" && !item.done && item.error === undefined)?.key;
   const updatePhase = (value: TaskPhase) => {
     phaseRef.current = value;
     setPhase(value);
   };
+  const draftKey = () => selectedIdRef.current ?? "__new__";
+  const updateRecoverySubmission = (value: RecoverySubmission | null) => {
+    recoverySubmissionRef.current = value;
+    setRecoverySubmission(value);
+  };
+  const changeTask = (value: string, source: "user" | "system" = "system") => {
+    taskValueRef.current = value;
+    draftsRef.current.set(draftKey(), value);
+    if (source === "user" && recoverySubmissionRef.current?.originKey === draftKey()) {
+      updateRecoverySubmission({ ...recoverySubmissionRef.current, autoRestored: false });
+    }
+    setTask(value);
+  };
+  const showStatusError = (text: string, retry: (() => void) | null = null) => {
+    retryActionRef.current = retry;
+    setStatusError(text);
+  };
+  // Unconfirmed text stays bound to its originating session; it is never replayed automatically.
+  const confirmPendingStart = (requestId: string, acceptedRecord?: TaskRecord | null, acceptedSummary?: TaskSummary) => {
+    const pendingStart = pendingStartRef.current;
+    const recovery = recoverySubmissionRef.current;
+    const acceptedId = acceptedRecord?.id ?? acceptedSummary?.id;
+    const originKey = pendingStart?.continueFrom ?? recovery?.originKey ?? "__new__";
+    const isOriginSelected = draftKey() === originKey;
+    if (pendingStart?.requestId === requestId) {
+      pendingStartRef.current = null;
+      setPendingTitle("");
+      const originDraft = isOriginSelected ? taskValueRef.current : draftsRef.current.get(originKey) ?? "";
+      if (originDraft && acceptedId) draftsRef.current.set(acceptedId, originDraft);
+      if (!pendingStart.continueFrom) {
+        draftsRef.current.delete("__new__");
+        if (acceptedId && isOriginSelected) {
+          selectedIdRef.current = acceptedId;
+          newTaskModeRef.current = false;
+        }
+      }
+    }
+    if (recovery?.requestId === requestId) {
+      const stillViewingOrigin = draftKey() === recovery.originKey;
+      if (recovery.autoRestored && stillViewingOrigin && taskValueRef.current === recovery.submittedText) changeTask("");
+      const originDraft = draftsRef.current.get(recovery.originKey) ?? "";
+      if (recovery.originKey === "__new__" && acceptedId) {
+        if (originDraft) draftsRef.current.set(acceptedId, originDraft);
+        draftsRef.current.delete("__new__");
+        if (stillViewingOrigin) {
+          selectedIdRef.current = acceptedId;
+          newTaskModeRef.current = false;
+        }
+      }
+      updateRecoverySubmission(null);
+    }
+    setStatusError((current) => current.includes("提交状态不确定") ? "" : current);
+  };
+  const restorePendingStart = (pendingStart: NonNullable<typeof pendingStartRef.current>, reason: RecoverySubmission["reason"], rejectionText?: string) => {
+    pendingStartRef.current = null;
+    retryActionRef.current = null;
+    setPendingTitle("");
+    if (!pendingStart.continueFrom) {
+      selectedIdRef.current = null;
+      newTaskModeRef.current = true;
+      recordRef.current = null;
+      setRecord(null);
+      setEvents([]);
+    }
+    updatePhase(recordRef.current?.phase ?? "idle");
+    const existingDraft = taskValueRef.current;
+    const originKey = pendingStart.continueFrom ?? "__new__";
+    if (!existingDraft) {
+      changeTask(pendingStart.text);
+    }
+    updateRecoverySubmission({
+      originKey,
+      requestId: pendingStart.requestId,
+      submittedText: pendingStart.text,
+      alternateDraft: existingDraft && existingDraft !== pendingStart.text ? existingDraft : "",
+      displayed: existingDraft && existingDraft !== pendingStart.text ? "alternate" : "submitted",
+      autoRestored: !existingDraft,
+      reason,
+    });
+    showStatusError(rejectionText ?? "任务提交状态不确定，已保留文本；请核对任务历史后再手动决定，系统不会自动重发。");
+  };
 
   const installRecord = (taskRecord: TaskRecord | null, serverState?: AgentSnapshot["state"]) => {
     cancelAnimationFrame(frame.current);
     frame.current = 0;
     pending.current = [];
-    pendingStartRef.current = false;
-    setPendingTitle("");
     const normalized = taskRecord ? { ...taskRecord, events: taskRecord.events ?? [] } : null;
     recordRef.current = normalized;
     selectedIdRef.current = normalized?.id ?? null;
+    activeTaskIdRef.current = normalized && (serverState === "running" || serverState === "stopping") ? normalized.id : activeTaskIdRef.current;
     setRecord(normalized);
     const received = normalized?.events ?? [];
     seenIdsRef.current = new Set(received.flatMap((event) => event.id === undefined ? [] : [`${event.taskId ?? normalized?.id ?? ""}:${event.id}`]));
@@ -161,29 +263,61 @@ export function AgentPanel({
 
   const handleSnapshot = (snapshot: AgentSnapshot) => {
     hasSnapshotRef.current = true;
+    setSnapshotReady(true);
     const summaries = snapshot.tasks ?? [];
     setTasks(summaries);
     setContinuableId(snapshot.continuable ?? "");
     const incoming = snapshot.task;
-    const shouldSelect = snapshot.state !== "idle" || pendingStartRef.current || (selectedIdRef.current === null && !newTaskModeRef.current) || selectedIdRef.current === incoming?.id;
+    if (snapshot.state !== "idle" && incoming?.id !== selectedIdRef.current) {
+      historyRequestRef.current.sequence++;
+      historyRequestRef.current.controller?.abort();
+      historyRequestRef.current.controller = null;
+    }
+    setGlobalTaskTitle(snapshot.state === "idle" ? "" : incoming?.title ?? "");
+    setGlobalTaskId(snapshot.state === "idle" ? null : incoming?.id ?? null);
+    // Global execution controls follow the snapshot, while the selected record stays user-owned.
+    setGlobalBusy(snapshot.state === "running" || snapshot.state === "stopping");
+    setGlobalRunState(snapshot.state);
+    activeTaskIdRef.current = snapshot.state === "idle" ? null : incoming?.id ?? null;
+    const matchingRequestId = pendingStartRef.current?.requestId ?? recoverySubmissionRef.current?.requestId;
+    const acceptedSummary = matchingRequestId && summaries.find((summary) => summary.requestId === matchingRequestId);
+    // A matching request ID confirms acceptance; a different running task is not a rejection.
+    if (matchingRequestId && incoming?.requestId === matchingRequestId) {
+      confirmPendingStart(matchingRequestId, incoming);
+    } else if (matchingRequestId && acceptedSummary) {
+      confirmPendingStart(matchingRequestId, null, acceptedSummary);
+      const sequence = ++historyRequestRef.current.sequence;
+      historyRequestRef.current.controller?.abort();
+      const controller = new AbortController();
+      historyRequestRef.current.controller = controller;
+      void getTask(acceptedSummary.id, controller.signal).then((accepted) => {
+        if (sequence === historyRequestRef.current.sequence && selectedIdRef.current === accepted.id) installRecord(accepted);
+      }).catch(() => {});
+    } else if (pendingStartRef.current && snapshot.state === "idle") {
+      restorePendingStart(pendingStartRef.current, "uncertain");
+    }
+    const pendingMismatch = !!pendingStartRef.current && incoming?.requestId !== pendingStartRef.current.requestId;
+    // Keep a selected history or new-session draft visible when another tab owns the active task.
+    const shouldSelect = !pendingMismatch && (snapshot.state !== "idle" && selectedIdRef.current === null && !newTaskModeRef.current || selectedIdRef.current !== null && selectedIdRef.current === incoming?.id || snapshot.state === "idle" && selectedIdRef.current === null && !newTaskModeRef.current);
     if (!shouldSelect) return;
     if (incoming) {
       installRecord(incoming, snapshot.state);
     } else if (snapshot.state === "idle" && selectedIdRef.current === null && !newTaskModeRef.current && summaries.length > 0) {
       const latest = summaries.reduce((left, right) => right.startedAt > left.startedAt ? right : left);
+      const sequence = ++historyRequestRef.current.sequence;
       void getTask(latest.id).then((latestRecord) => {
-        if (selectedIdRef.current === null && !isBusy(phaseRef.current)) installRecord(latestRecord);
-      }).catch(() => installRecord(null, "idle"));
+        if (sequence === historyRequestRef.current.sequence && selectedIdRef.current === null && !isBusy(phaseRef.current)) installRecord(latestRecord);
+      }).catch(() => { if (sequence === historyRequestRef.current.sequence && selectedIdRef.current === null) installRecord(null, "idle"); });
     } else {
       installRecord(null, snapshot.state);
     }
   };
 
   const loadStatus = () => {
-    setStatusError("");
+    showStatusError("");
     llmStatus()
       .then(setStatus)
-      .catch((error) => setStatusError(`模型配置读取失败：${String(error)}`));
+      .catch((error) => showStatusError(`模型配置读取失败：${String(error)}`, loadStatus));
   };
   useEffect(() => {
     let active = true;
@@ -192,7 +326,7 @@ export function AgentPanel({
         if (active) setStatus(value);
       })
       .catch((error) => {
-        if (active) setStatusError(`模型配置读取失败：${String(error)}`);
+        if (active) showStatusError(`模型配置读取失败：${String(error)}`, loadStatus);
       });
     return () => { active = false; };
   }, []);
@@ -203,6 +337,8 @@ export function AgentPanel({
       setConnectionState("connecting");
       const socket = new WebSocket(wsURL("/ws/agent"));
       socketRef.current = socket;
+      socketSnapshotReadyRef.current = false;
+      setSnapshotReady(false);
       const timeout = setTimeout(() => { if (socket.readyState !== WebSocket.OPEN) socket.close(); }, 12_000);
       socket.onopen = () => {
         if (!active || socketRef.current !== socket) return;
@@ -214,29 +350,29 @@ export function AgentPanel({
         if (!active || socketRef.current !== socket) return;
         try {
           const value = JSON.parse(message.data);
-          if (value?.type === "snapshot") { handleSnapshot(value as AgentSnapshot); return; }
+          if (value?.type === "snapshot") { socketSnapshotReadyRef.current = true; hasSnapshotRef.current = true; handleSnapshot(value as AgentSnapshot); return; }
           if (typeof value?.type !== "string") return;
           const event = value as AgentEvent;
-          // A start rejection is an error that belongs to no task (task events
-          // always carry taskId). Surface the reason in the composer and restore
-          // the typed draft instead of silently clearing it.
-          if (event.type === "error" && pendingStartRef.current && !event.taskId) {
-            pendingStartRef.current = false;
-            setPendingTitle("");
-            updatePhase(recordRef.current?.phase === "interrupted" ? "interrupted" : recordRef.current ? "finished" : "idle");
-            setStatusError(event.text || "任务未能启动，请稍后重试。");
-            setTask((current) => current || lastSubmittedRef.current);
+          // A request-scoped rejection keeps both the submitted text and any newer draft available.
+          if (event.type === "error" && pendingStartRef.current && !event.taskId && (!event.requestId || event.requestId === pendingStartRef.current.requestId)) {
+            restorePendingStart(pendingStartRef.current, "rejected", event.text || "任务未能启动，请稍后重试。");
             return;
           }
           if (event.type === "run_state") {
-            const next = applyAgentEvent(phaseRef.current, event);
-            updatePhase(next);
-            if (event.state === "idle") {
-              pendingStartRef.current = false;
+            const matchingSelectedTask = !event.taskId ? !!activeTaskIdRef.current && activeTaskIdRef.current === recordRef.current?.id : event.taskId === recordRef.current?.id;
+            setGlobalBusy(event.state === "running" || event.state === "stopping");
+            setGlobalRunState(event.state === "running" || event.state === "stopping" ? event.state : "idle");
+            if (event.state === "idle") setGlobalTaskId(null);
+            else if (event.taskId) setGlobalTaskId(event.taskId);
+            if (matchingSelectedTask) {
+              const next = applyAgentEvent(phaseRef.current, event);
+              updatePhase(next);
+            }
+            if (event.state === "idle" && matchingSelectedTask) {
               setPendingTitle("");
             }
             const current = recordRef.current;
-            if (current && (event.state === "running" || event.state === "stopping" || event.state === "idle")) {
+            if (current && matchingSelectedTask && (event.state === "running" || event.state === "stopping" || event.state === "idle")) {
               const recordPhase: TaskRecord["phase"] = event.state === "idle" ? "finished" : event.state === "stopping" ? "stopping" : "running";
               const updated: TaskRecord = { ...current, phase: recordPhase, ...(event.state === "idle" ? { endedAt: Date.now() } : {}) };
               recordRef.current = updated;
@@ -261,6 +397,9 @@ export function AgentPanel({
           notifySessionExpired();
           return;
         }
+        void checkSessionAfterDisconnect().then((valid) => { if (!valid || !active) return; });
+        // A close after a transmitted start leaves its identity and text pending.
+        // The next connection's first snapshot decides whether it was accepted.
         const delay = retryDelayRef.current;
         retryDelayRef.current = Math.min(5_000, delay * 2);
         reconnectTimer.current = setTimeout(connect, delay);
@@ -278,8 +417,8 @@ export function AgentPanel({
     };
   }, []);
   useEffect(() => {
-    onPhaseChange?.(phase);
-  }, [phase, onPhaseChange]);
+    onPhaseChange?.(globalBusy ? globalRunState === "stopping" ? "stopping" : "running" : phase);
+  }, [phase, globalBusy, globalRunState, onPhaseChange]);
   // Like a chat: a message sent while the server's continuable session is shown
   // stays in that session. "新建任务" clears the view to start a fresh one.
   const canContinue = !isBusy(phase) && !!record && record.id === continuableId;
@@ -312,14 +451,17 @@ export function AgentPanel({
   const start = () => {
     const text = task.trim();
     const socket = socketRef.current;
-    if (!text || !status?.hasKey || isBusy(phaseRef.current) || pendingStartRef.current || socket?.readyState !== WebSocket.OPEN) return;
+    if (!text || !status?.hasKey || globalBusy || isBusy(phaseRef.current) || pendingStartRef.current || socket?.readyState !== WebSocket.OPEN || !socketSnapshotReadyRef.current) return;
     try {
-      setStatusError("");
-      lastSubmittedRef.current = text;
-      pendingStartRef.current = true;
-      newTaskModeRef.current = false;
+      historyRequestRef.current.sequence++;
+      historyRequestRef.current.controller?.abort();
+      historyRequestRef.current.controller = null;
+      showStatusError("");
+      const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const continueFrom = canContinue && recordRef.current ? recordRef.current.id : undefined;
-      socket.send(JSON.stringify(continueFrom ? { type: "start", task: text, continueFrom } : { type: "start", task: text }));
+      pendingStartRef.current = { requestId, text, continueFrom };
+      newTaskModeRef.current = false;
+      socket.send(JSON.stringify({ type: "start", task: text, requestId, ...(continueFrom ? { continueFrom } : {}) }));
       if (!continueFrom) {
         // A new session: clear the view until the server's snapshot arrives.
         selectedIdRef.current = null;
@@ -329,69 +471,89 @@ export function AgentPanel({
         pending.current = [];
         setPendingTitle(text);
       }
+      if (recoverySubmissionRef.current?.originKey === draftKey() && recoverySubmissionRef.current.submittedText === text) updateRecoverySubmission(null);
+      draftsRef.current.set(draftKey(), "");
+      taskValueRef.current = "";
       setTask("");
       startedAt.current = Date.now();
       setSeconds(0);
       updatePhase("connecting");
     } catch {
-      pendingStartRef.current = false;
-      setStatusError("任务发送失败，草稿已保留。请等待连接恢复后重试。");
+      const pendingStart = pendingStartRef.current;
+      pendingStartRef.current = null;
+      if (pendingStart && !taskValueRef.current) changeTask(pendingStart.text);
+      showStatusError("任务发送失败，草稿已保留。请等待连接恢复后重试。");
     }
   };
   const stop = () => {
-    if (socketRef.current?.readyState === WebSocket.OPEN && isBusy(phaseRef.current)) {
+    if (socketRef.current?.readyState === WebSocket.OPEN && (globalBusy || isBusy(phaseRef.current))) {
       try {
         socketRef.current.send(JSON.stringify({ type: "stop" }));
         updatePhase("stopping");
       } catch {
-        setStatusError("停止请求未发送，后台连接正在恢复。");
+        showStatusError("停止请求未发送，后台连接正在恢复。");
       }
     }
   };
   const newTask = () => {
-    if (isBusy(phaseRef.current)) return;
+    if (globalBusy || isBusy(phaseRef.current)) return;
+    historyRequestRef.current.sequence++;
+    historyRequestRef.current.controller?.abort();
+    historyRequestRef.current.controller = null;
+    showStatusError("");
     newTaskModeRef.current = true;
     clearLog();
     recordRef.current = null;
     selectedIdRef.current = null;
     setRecord(null);
     setPendingTitle("");
-    setTask("");
+    selectedIdRef.current = null;
+    changeTask(draftsRef.current.get("__new__") ?? "");
     updatePhase("idle");
     requestAnimationFrame(() => inputRef.current?.focus());
   };
   const selectTask = async (id: string) => {
-    if (isBusy(phaseRef.current)) return;
+    if (globalBusy || isBusy(phaseRef.current)) return;
     if (!id) { newTask(); return; }
+    const sequence = ++historyRequestRef.current.sequence;
+    historyRequestRef.current.controller?.abort();
+    const controller = new AbortController();
+    historyRequestRef.current.controller = controller;
+    showStatusError("");
     try {
-      const selected = await getTask(id);
-      if (isBusy(phaseRef.current)) return;
+      const selected = await getTask(id, controller.signal);
+      if (sequence !== historyRequestRef.current.sequence || globalBusy || isBusy(phaseRef.current)) return;
+      draftsRef.current.set(draftKey(), taskValueRef.current);
       newTaskModeRef.current = false;
       installRecord(selected);
-      setTask("");
+      changeTask(draftsRef.current.get(id) ?? "");
     } catch (error) {
-      setStatusError(`任务记录读取失败：${String(error)}`);
+      if (sequence === historyRequestRef.current.sequence && !controller.signal.aborted) showStatusError(`任务记录读取失败：${String(error)}`, () => { void selectTask(id); });
     }
   };
   const truncated =
     events.length >= MAX_EVENTS ||
     events.some((event) => event.text?.startsWith(TRUNCATED));
   const empty = !record && !pendingTitle;
+  const heroEmpty = empty && !globalBusy;
+  const hideHeader = empty && !globalBusy && tasks.length === 0 && !recoverySubmission;
   const submittedTask = record?.title ?? pendingTitle;
+  const headerTitle = heroEmpty ? "部署任务" : submittedTask || (globalBusy ? globalTaskTitle || "后台任务" : "部署任务");
+  const otherGlobalTask = globalBusy && !!record && (globalTaskId ? globalTaskId !== record.id : !!globalTaskTitle && globalTaskTitle !== submittedTask);
   const activity = [...events].reverse().find((event) => event.type === "activity");
   const activityLabel = activity?.text ?? ({ preparing: "收集环境", generating: "等待模型", executing: "执行工具" } as Record<string, string>)[activity?.state ?? ""];
   const label = connectionState !== "connected"
     ? connectionState === "connecting" ? "连接后台中" : "后台断开，正在重连"
-    : phase === "stopping" ? "等待清理" : phase === "connecting" ? "连接中" : phase === "idle" && status && !status.hasKey ? "未配置模型" : busy ? activityLabel ?? "进行中" : phase === "disconnected" ? "连接断开" : phaseLabels[phase];
+    : globalBusy && globalRunState === "stopping" ? "等待后台清理" : globalBusy ? activityLabel ?? "后台任务执行中" : phase === "stopping" ? "等待清理" : phase === "connecting" ? "连接中" : phase === "idle" && status && !status.hasKey ? "未配置模型" : phase === "disconnected" ? "连接断开" : phaseLabels[phase];
 
   const composer = (
     <div className="composer">
       {statusError && (
         <div className="feedback error composer-alert" role="alert">
           {statusError}{" "}
-          <button className="text-button" onClick={loadStatus}>
+          {retryActionRef.current && <button className="text-button" onClick={() => retryActionRef.current?.()}>
             重试
-          </button>
+          </button>}
         </div>
       )}
       <label className="sr-only" htmlFor="task-input">
@@ -401,8 +563,8 @@ export function AgentPanel({
         id="task-input"
         ref={inputRef}
         value={task}
-        onChange={(event) => setTask(event.target.value)}
-        placeholder={busy ? "准备下一条任务" : empty ? "输入部署任务" : canContinue ? "继续对话，在当前任务的进展上执行（点「新建任务」开始新会话）" : "输入新任务"}
+        onChange={(event) => changeTask(event.target.value, "user")}
+        placeholder={busy ? "补充当前任务" : empty ? "输入部署任务" : canContinue ? "继续当前任务（点「新建任务」开始新会话）" : "输入新任务"}
         rows={2}
         onKeyDown={(event) => {
           // Some IMEs report keyCode 229 after composition ends; that Enter selects text.
@@ -419,13 +581,23 @@ export function AgentPanel({
           }
         }}
       />
+      {busy && <div className="composer-context" role="status">{!record ? <>后台任务“{globalTaskTitle || "其他会话任务"}”正在运行；这份草稿仍属于新会话，不会发给后台任务。</> : otherGlobalTask ? <>后台任务“{globalTaskTitle || "其他会话任务"}”正在运行；这份草稿仍属于所选会话“{submittedTask}”，不会发给后台任务。</> : <>当前后台任务仍在运行；结束后可手动将这份输入发送为“{globalTaskTitle || submittedTask || "当前任务"}”的补充消息。</>}要开始独立任务，请等待结束后点“新建任务”。</div>}
+      {recoverySubmission?.originKey === draftKey() && <div className="feedback error" role="status">
+        {recoverySubmission.reason === "uncertain" ? "提交是否已被后台接受仍不确定" : "后台明确拒绝了这次提交"}：{recoverySubmission.displayed === "submitted" ? recoverySubmission.submittedText : recoverySubmission.alternateDraft}
+        {recoverySubmission.alternateDraft && <button className="text-button" onClick={() => {
+          const nextDisplayed = recoverySubmission.displayed === "submitted" ? "alternate" : "submitted";
+          const currentText = taskValueRef.current;
+          changeTask(nextDisplayed === "submitted" ? recoverySubmission.submittedText : recoverySubmission.alternateDraft);
+          updateRecoverySubmission({ ...recoverySubmission, displayed: nextDisplayed, alternateDraft: currentText });
+        }}>{recoverySubmission.displayed === "submitted" ? "切回当前草稿" : "载入待确认文本"}</button>}
+      </div>}
       <div className="composer-foot">
         <Settings status={status} disabled={busy} onSaved={setStatus} version={version} />
         <button
           className="button primary"
           onClick={start}
-          disabled={busy || connectionState !== "connected" || !status?.hasKey || !task.trim()}
-          title={busy ? "当前任务结束后可执行" : connectionState !== "connected" ? "等待后台连接恢复" : !status?.hasKey ? "请先配置模型" : "Enter 发送，Shift + Enter 换行"}
+          disabled={busy || connectionState !== "connected" || !snapshotReady || !status?.hasKey || !task.trim()}
+          title={busy ? "当前任务结束后可执行" : connectionState !== "connected" ? "等待后台连接恢复" : !snapshotReady ? "等待后台任务状态确认" : !status?.hasKey ? "请先配置模型" : "Enter 发送，Shift + Enter 换行"}
         >
           执行任务
         </button>
@@ -436,13 +608,13 @@ export function AgentPanel({
   return (
     <section
       className="panel agent-panel"
-      data-empty={empty}
+      data-empty={hideHeader}
       id="agent-panel"
       aria-labelledby="agent-title"
     >
       <header className="panel-head">
         <div className="panel-title">
-          <h2 id="agent-title" title={empty ? "" : submittedTask}>{empty ? "部署任务" : submittedTask}</h2>
+          <h2 id="agent-title" title={heroEmpty ? "" : headerTitle}>{headerTitle}</h2>
         </div>
         <div className="panel-meta">
           <span className="status-chip">
@@ -453,7 +625,7 @@ export function AgentPanel({
           {seconds > 0 && (
             <span className="meta-extra">{formatDuration(seconds)}</span>
           )}
-          {!busy && !empty && (
+          {!busy && !heroEmpty && (
             <button className="button ghost" onClick={newTask}>
               <Icon name="plus" size={14} />
               新建任务
@@ -518,17 +690,17 @@ export function AgentPanel({
         )}
       </div>
       {/* Keep one composer mounted across task states so focus and settings survive. */}
-      <div className={empty ? "dock hero" : "dock"}>
-        {empty && <h3>开始部署</h3>}
+      <div className={heroEmpty ? "dock hero" : "dock"}>
+        {heroEmpty && <h3>开始部署</h3>}
         {composer}
-        {empty && (
+        {heroEmpty && (
               <div className="examples" aria-label="示例任务">
                 {examples.map((example) => (
                   <button
                     key={example.label}
                     className="example"
                     onClick={() => {
-                      setTask(example.task);
+                      changeTask(example.task, "user");
                       inputRef.current?.focus();
                     }}
                   >

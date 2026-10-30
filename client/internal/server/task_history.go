@@ -48,11 +48,13 @@ func truncateUTF8(s string, max int) string {
 }
 
 type taskRecord struct {
-	ID        string        `json:"id"`
-	Title     string        `json:"title"`
-	StartedAt int64         `json:"startedAt"`
-	EndedAt   int64         `json:"endedAt,omitempty"`
-	Phase     string        `json:"phase"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	StartedAt int64  `json:"startedAt"`
+	EndedAt   int64  `json:"endedAt,omitempty"`
+	Phase     string `json:"phase"`
+	// RequestID is the latest start request accepted for this task.
+	RequestID string        `json:"requestId,omitempty"`
 	Events    []agent.Event `json:"events"`
 	NextID    int64         `json:"nextId"`
 }
@@ -164,6 +166,19 @@ func (s *Server) snapshotLocked() any {
 	}
 	return snapshot
 }
+
+// runStateMessage ties a lifecycle update to its task when one exists. Idle
+// notifications from an empty server intentionally have no task identity.
+func runStateMessage(state string, task *taskRecord) map[string]any {
+	message := map[string]any{"type": "run_state", "state": state}
+	if task != nil {
+		message["taskId"] = task.ID
+		if task.RequestID != "" {
+			message["requestId"] = task.RequestID
+		}
+	}
+	return message
+}
 func (s *Server) broadcastTaskLocked(value any) {
 	data, _ := json.Marshal(value)
 	for ch := range s.taskSubscribers {
@@ -265,6 +280,12 @@ func (s *Server) reopenTaskLocked(id string) (*taskRecord, error) {
 }
 
 func (s *Server) startTask(text, owner, continueFrom string) string {
+	return s.startTaskWithRequestID(text, owner, continueFrom, "")
+}
+
+// startTaskWithRequestID records the latest client request on successful start;
+// startTask remains available to existing callers without a request ID.
+func (s *Server) startTaskWithRequestID(text, owner, continueFrom, requestID string) string {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	if s.taskCancel != nil {
@@ -308,6 +329,10 @@ func (s *Server) startTask(text, owner, continueFrom string) string {
 		task = &taskRecord{ID: hex.EncodeToString(token), Title: text, StartedAt: time.Now().UnixMilli(), Phase: "running", Events: []agent.Event{}}
 		s.tasks = append([]*taskRecord{task}, s.tasks...)
 	}
+	previousRequestID := task.RequestID
+	if requestID != "" {
+		task.RequestID = requestID
+	}
 
 	ctx, cancel := context.WithCancel(s.baseCtx)
 	s.taskCancel = cancel
@@ -337,6 +362,7 @@ func (s *Server) startTask(text, owner, continueFrom string) string {
 	}
 	s.persistTasksLocked()
 	if s.historyErr != nil {
+		task.RequestID = previousRequestID
 		cancel()
 		s.taskCancel = nil
 		task.Phase = "interrupted"
@@ -345,7 +371,7 @@ func (s *Server) startTask(text, owner, continueFrom string) string {
 		return "任务未启动，历史记录保存失败：" + s.historyErr.Error()
 	}
 	s.broadcastTaskLocked(s.snapshotLocked())
-	s.broadcastTaskLocked(map[string]string{"type": "run_state", "state": "running"})
+	s.broadcastTaskLocked(runStateMessage("running", task))
 	s.taskWG.Add(1)
 	go func() {
 		defer s.taskWG.Done()
@@ -367,7 +393,7 @@ func (s *Server) startTask(text, owner, continueFrom string) string {
 		s.releaseAgent()
 		s.persistTasksLocked()
 		s.broadcastTaskLocked(s.snapshotLocked())
-		s.broadcastTaskLocked(map[string]string{"type": "run_state", "state": "idle"})
+		s.broadcastTaskLocked(runStateMessage("idle", task))
 	}()
 	return ""
 }
@@ -375,14 +401,18 @@ func (s *Server) stopTask() {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	state := "idle"
+	var task *taskRecord
 	if s.taskCancel != nil {
 		s.taskCancel()
 		s.markAgentStopping()
-		s.tasks[0].Phase = "stopping"
+		if len(s.tasks) > 0 {
+			task = s.tasks[0]
+			task.Phase = "stopping"
+		}
 		state = "stopping"
 		s.persistTasksLocked()
 	}
-	s.broadcastTaskLocked(map[string]string{"type": "run_state", "state": state})
+	s.broadcastTaskLocked(runStateMessage(state, task))
 }
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
