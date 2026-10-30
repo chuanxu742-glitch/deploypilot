@@ -71,7 +71,7 @@ Write-Host "API key received (length $($key.Length), prefix $($key.Substring(0, 
 $env:BAILU_API_KEY = $key
 $key = $null
 if ($Model) { $env:BAILU_MODEL = $Model }
-$env:GOTOOLCHAIN = 'local'
+if (-not $env:GOTOOLCHAIN) { $env:GOTOOLCHAIN = 'auto' }
 $env:GOPROXY = 'https://goproxy.cn,direct'
 
 try {

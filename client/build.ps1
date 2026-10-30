@@ -22,7 +22,9 @@ if (-not $go) { $go = Join-Path $PSScriptRoot '..\.tools\go\bin\go.exe' }
 if (-not (Test-Path $go)) { $go = 'go' }
 
 $env:GOPROXY = 'https://goproxy.cn,direct'
-$env:GOTOOLCHAIN = 'local'
+# go.mod pins the minimum Go version; 'auto' fetches it when the installed Go
+# is older (forcing 'local' made the build fail on such hosts).
+if (-not $env:GOTOOLCHAIN) { $env:GOTOOLCHAIN = 'auto' }
 
 $version = if ($Version) { $Version } else { (Get-Date -Format 'yyyy.MM.dd') + '-dev' }
 $ldflags = "-s -w -X main.version=$version"
