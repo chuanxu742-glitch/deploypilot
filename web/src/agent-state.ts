@@ -19,7 +19,13 @@ export interface AgentEvent {
 }
 
 export type TaskPhase =
-  "idle" | "connecting" | "running" | "stopping" | "finished" | "interrupted" | "disconnected";
+  | "idle"
+  | "connecting"
+  | "running"
+  | "stopping"
+  | "finished"
+  | "interrupted"
+  | "disconnected";
 
 /** A final event the model reported as an explicit failure (success === false). */
 export function isFailedFinal(event: AgentEvent): boolean {
@@ -53,7 +59,12 @@ export function mergeEvent(
   previous: AgentEvent[],
   event: AgentEvent,
 ): AgentEvent[] {
-  if (event.id !== undefined && previous.some((item) => item.id === event.id && item.taskId === event.taskId))
+  if (
+    event.id !== undefined &&
+    previous.some(
+      (item) => item.id === event.id && item.taskId === event.taskId,
+    )
+  )
     return previous;
   const clip = (text: string) =>
     text.length > MAX_EVENT_TEXT
@@ -83,7 +94,11 @@ export interface ActionItem {
   error?: string;
 }
 export type TimelineItem =
-  | { kind: "activity" | "note" | "message" | "error" | "final" | "user"; key: number; event: AgentEvent }
+  | {
+      kind: "activity" | "note" | "message" | "error" | "final" | "user";
+      key: number;
+      event: AgentEvent;
+    }
   | ActionItem;
 
 /**
@@ -108,7 +123,13 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       items.push(open);
     } else if (event.type === "output") {
       if (event.callId) {
-        open = [...items].reverse().find((item): item is ActionItem => item.kind === "action" && item.call?.callId === event.callId) ?? null;
+        open =
+          [...items]
+            .reverse()
+            .find(
+              (item): item is ActionItem =>
+                item.kind === "action" && item.call?.callId === event.callId,
+            ) ?? null;
       }
       if (!open || open.done || open.error !== undefined) {
         open = { kind: "action", key };
@@ -117,7 +138,13 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       open.output = (open.output ?? "") + (event.text ?? "");
     } else if (event.type === "tool_done") {
       if (event.callId) {
-        open = [...items].reverse().find((item): item is ActionItem => item.kind === "action" && item.call?.callId === event.callId) ?? null;
+        open =
+          [...items]
+            .reverse()
+            .find(
+              (item): item is ActionItem =>
+                item.kind === "action" && item.call?.callId === event.callId,
+            ) ?? null;
       }
       if (!open || open.done) {
         open = { kind: "action", key };
@@ -126,25 +153,41 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       open.done = event;
     } else if (event.type === "error") {
       const target = event.callId
-        ? [...items].reverse().find((item): item is ActionItem => item.kind === "action" && item.call?.callId === event.callId)
-        : open && !open.done && open.error === undefined ? open : undefined;
+        ? [...items]
+            .reverse()
+            .find(
+              (item): item is ActionItem =>
+                item.kind === "action" && item.call?.callId === event.callId,
+            )
+        : open && !open.done && open.error === undefined
+          ? open
+          : undefined;
       if (target) target.error = event.text ?? "";
-      else { open = null; items.push({ kind: "error", key, event }); }
+      else {
+        open = null;
+        items.push({ kind: "error", key, event });
+      }
     } else if (event.type === "thinking") {
       // Historical wire name: this is public assistant content, not hidden reasoning.
       // Consecutive deltas form one reply; never render one fragment per line.
       const last = items[items.length - 1];
       if (last?.kind === "message") {
-        last.event = { ...last.event, text: (last.event.text ?? "") + (event.text ?? "") };
+        last.event = {
+          ...last.event,
+          text: (last.event.text ?? "") + (event.text ?? ""),
+        };
       } else {
         items.push({ kind: "message", key, event });
       }
     } else {
       open = null;
       if (event.type === "user") items.push({ kind: "user", key, event });
-      else if (event.type === "status") items.push({ kind: "note", key, event });
-      else if (event.type === "error") items.push({ kind: "error", key, event });
-      else if (event.type === "final") items.push({ kind: "final", key, event });
+      else if (event.type === "status")
+        items.push({ kind: "note", key, event });
+      else if (event.type === "error")
+        items.push({ kind: "error", key, event });
+      else if (event.type === "final")
+        items.push({ kind: "final", key, event });
     }
   }
   return items;

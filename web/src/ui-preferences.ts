@@ -9,7 +9,9 @@ export function resolveTheme(saved: string | null): ThemeName {
 
 export function clampSplitRatio(value: number, usableWidth?: number): number {
   if (!Number.isFinite(value)) return 0.6;
-  const max = usableWidth ? Math.max(0.4, Math.min(0.75, 1 - 360 / usableWidth)) : 0.75;
+  const max = usableWidth
+    ? Math.max(0.4, Math.min(0.75, 1 - 360 / usableWidth))
+    : 0.75;
   return Math.min(max, Math.max(0.4, value));
 }
 
@@ -20,9 +22,17 @@ export function readSplitRatio(saved: string | null): number {
 }
 
 export function readPreference(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 
 export function writePreference(key: string, value: string): void {
-  try { localStorage.setItem(key, value); } catch { /* UI remains usable without storage. */ }
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* UI remains usable without storage. */
+  }
 }

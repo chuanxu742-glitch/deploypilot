@@ -56,7 +56,9 @@ export function Settings({
       } else {
         // /models reads the server's in-memory key, so store a newly entered key first.
         if (apiKey.trim()) {
-          onSaved(await setLLMConfig({ apiKey: apiKey.trim() }, controller.signal));
+          onSaved(
+            await setLLMConfig({ apiKey: apiKey.trim() }, controller.signal),
+          );
           setApiKey("");
         }
         const result = await listModels(controller.signal);
@@ -69,7 +71,10 @@ export function Settings({
         });
       }
     } catch (error) {
-      setFeedback({ text: controller.signal.aborted ? "请求超时，请重试。" : String(error), error: true });
+      setFeedback({
+        text: controller.signal.aborted ? "请求超时，请重试。" : String(error),
+        error: true,
+      });
     } finally {
       clearTimeout(timeout);
       pendingRef.current = false;
@@ -157,7 +162,9 @@ export function Settings({
               </p>
             )}
             <footer className="dialog-footer">
-              {version && <span className="settings-version">DeployPilot {version}</span>}
+              {version && (
+                <span className="settings-version">DeployPilot {version}</span>
+              )}
               <button
                 className="button primary"
                 disabled={!!pending || (!status?.hasKey && !apiKey.trim())}

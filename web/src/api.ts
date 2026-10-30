@@ -15,7 +15,10 @@ export function notifySessionExpired(): void {
   sessionExpiredHandler?.();
 }
 
-async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
   const response = await fetch(input, init);
   if (response.status === 401) notifySessionExpired();
   return response;
@@ -67,8 +70,14 @@ export async function listTasks(signal?: AbortSignal): Promise<TaskSummary[]> {
   return response.json();
 }
 
-export async function getTask(id: string, signal?: AbortSignal): Promise<TaskRecord> {
-  const response = await authenticatedFetch(`/api/tasks/${encodeURIComponent(id)}`, { signal });
+export async function getTask(
+  id: string,
+  signal?: AbortSignal,
+): Promise<TaskRecord> {
+  const response = await authenticatedFetch(
+    `/api/tasks/${encodeURIComponent(id)}`,
+    { signal },
+  );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -127,7 +136,9 @@ export async function checkSessionAfterDisconnect(): Promise<boolean> {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 4_000);
       try {
-        const response = await fetch("/api/session", { signal: controller.signal });
+        const response = await fetch("/api/session", {
+          signal: controller.signal,
+        });
         if (response.status === 401) {
           notifySessionExpired();
           return false;
@@ -192,10 +203,13 @@ export async function llmStatus(): Promise<LLMStatus> {
   return res.json();
 }
 
-export async function setLLMConfig(cfg: {
-  apiKey?: string;
-  model?: string;
-}, signal?: AbortSignal): Promise<LLMStatus> {
+export async function setLLMConfig(
+  cfg: {
+    apiKey?: string;
+    model?: string;
+  },
+  signal?: AbortSignal,
+): Promise<LLMStatus> {
   const res = await authenticatedFetch("/api/llm/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

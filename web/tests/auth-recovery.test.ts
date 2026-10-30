@@ -4,7 +4,9 @@ import { authenticate, listModels, onSessionExpired } from "../src/api.ts";
 
 test("post-pair API 401 notifies the app and a disconnect probe reports expiry", async () => {
   let expired = 0;
-  onSessionExpired(() => { expired += 1; });
+  onSessionExpired(() => {
+    expired += 1;
+  });
   globalThis.fetch = async () => new Response("{}", { status: 401 });
 
   const { checkSessionAfterDisconnect } = await import("../src/api.ts");
@@ -19,7 +21,9 @@ test("post-pair API 401 notifies the app and a disconnect probe reports expiry",
 
 test("disconnect probe keeps retrying when session status is unknown", async () => {
   const { checkSessionAfterDisconnect } = await import("../src/api.ts");
-  globalThis.fetch = async () => { throw new TypeError("offline"); };
+  globalThis.fetch = async () => {
+    throw new TypeError("offline");
+  };
   assert.equal(await checkSessionAfterDisconnect(), true);
 });
 
@@ -29,7 +33,9 @@ test("concurrent disconnect checks share one session request", async () => {
   let resolveResponse!: (response: Response) => void;
   globalThis.fetch = async () => {
     requests += 1;
-    return new Promise<Response>((resolve) => { resolveResponse = resolve; });
+    return new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
   };
 
   const first = checkSessionAfterDisconnect();
@@ -41,11 +47,22 @@ test("concurrent disconnect checks share one session request", async () => {
 
 test("revisiting a used pairing link accepts an already valid session first", async () => {
   const calls: string[] = [];
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "#t=used-token", pathname: "/", search: "" } } });
-  Object.defineProperty(globalThis, "history", { configurable: true, value: { replaceState: (_state: unknown, _title: string, url: string) => { calls.push(`clear:${url}`); } } });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { hash: "#t=used-token", pathname: "/", search: "" } },
+  });
+  Object.defineProperty(globalThis, "history", {
+    configurable: true,
+    value: {
+      replaceState: (_state: unknown, _title: string, url: string) => {
+        calls.push(`clear:${url}`);
+      },
+    },
+  });
   globalThis.fetch = async (input) => {
     calls.push(String(input));
-    if (String(input) === "/api/session") return new Response("{}", { status: 200 });
+    if (String(input) === "/api/session")
+      return new Response("{}", { status: 200 });
     throw new Error(`unexpected request: ${String(input)}`);
   };
 
@@ -56,12 +73,20 @@ test("revisiting a used pairing link accepts an already valid session first", as
 test("an invalid one-time token falls back to checking an existing session", async () => {
   const calls: string[] = [];
   let sessionChecks = 0;
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "#t=used-token", pathname: "/", search: "" } } });
-  Object.defineProperty(globalThis, "history", { configurable: true, value: { replaceState: () => {} } });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { hash: "#t=used-token", pathname: "/", search: "" } },
+  });
+  Object.defineProperty(globalThis, "history", {
+    configurable: true,
+    value: { replaceState: () => {} },
+  });
   globalThis.fetch = async (input) => {
     calls.push(String(input));
-    if (String(input) === "/api/pair") return new Response("{}", { status: 401 });
-    if (String(input) === "/api/session") return new Response("{}", { status: ++sessionChecks === 1 ? 401 : 200 });
+    if (String(input) === "/api/pair")
+      return new Response("{}", { status: 401 });
+    if (String(input) === "/api/session")
+      return new Response("{}", { status: ++sessionChecks === 1 ? 401 : 200 });
     throw new Error(`unexpected request: ${String(input)}`);
   };
 

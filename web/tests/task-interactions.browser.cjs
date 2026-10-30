@@ -6,42 +6,154 @@ const { spawn } = require("node:child_process");
 (async () => {
   const root = path.resolve(__dirname, "../..");
   const previewPort = process.env.DP_TASK_PREVIEW_PORT || "4176";
-  const previewArgs = [path.join(path.dirname(require.resolve("vite/package.json")), "bin/vite.js"), "preview", "--host", "127.0.0.1", "--port", previewPort, "--strictPort"];
-  if (process.env.DP_TASK_PREVIEW_DIR) previewArgs.push("--outDir", path.resolve(process.env.DP_TASK_PREVIEW_DIR));
-  const preview = spawn(process.execPath, previewArgs, { cwd: path.join(root, "web"), stdio: "ignore" });
+  const previewArgs = [
+    path.join(
+      path.dirname(require.resolve("vite/package.json")),
+      "bin/vite.js",
+    ),
+    "preview",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    previewPort,
+    "--strictPort",
+  ];
+  if (process.env.DP_TASK_PREVIEW_DIR)
+    previewArgs.push("--outDir", path.resolve(process.env.DP_TASK_PREVIEW_DIR));
+  const preview = spawn(process.execPath, previewArgs, {
+    cwd: path.join(root, "web"),
+    stdio: "ignore",
+  });
   let browser;
   try {
     let ready = false;
-    for (let i = 0; i < 100; i++) { try { if ((await fetch(`http://127.0.0.1:${previewPort}`)).ok) { ready = true; break; } } catch {} await new Promise(r => setTimeout(r, 50)); }
-    if (!ready) throw new Error(`Preview server did not start on ${previewPort}`);
+    for (let i = 0; i < 100; i++) {
+      try {
+        if ((await fetch(`http://127.0.0.1:${previewPort}`)).ok) {
+          ready = true;
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!ready)
+      throw new Error(`Preview server did not start on ${previewPort}`);
     browser = await chromium.launch({ channel: "chrome", headless: true });
-    const record = (id, phase = "finished", events = []) => ({ id, title: `任务 ${id}`, startedAt: Date.now() - 10000, endedAt: Date.now(), phase, events });
-    async function setup(records = [record("latest"), record("A"), record("B")], options = {}) {
+    const record = (id, phase = "finished", events = []) => ({
+      id,
+      title: `任务 ${id}`,
+      startedAt: Date.now() - 10000,
+      endedAt: Date.now(),
+      phase,
+      events,
+    });
+    async function setup(
+      records = [record("latest"), record("A"), record("B")],
+      options = {},
+    ) {
       const context = await browser.newContext();
-      const page = await context.newPage(); page.setDefaultTimeout(5000);
-      const s = { records, delays: {}, sockets: [], messages: [], starts: [], current: null, state: "idle", autoAccept: true, statusReads: 0, taskReads: 0, holdFirstSnapshot: false, continuable: undefined };
-      s.snapshot = (socket = s.sockets.at(-1), extra = {}) => socket?.send(JSON.stringify({ type: "snapshot", state: s.state, task: s.current, tasks: s.records.map(({ events, ...r }) => r), continuable: s.continuable, ...extra }));
-      await page.route("**/api/**", async route => {
+      const page = await context.newPage();
+      page.setDefaultTimeout(5000);
+      const s = {
+        records,
+        delays: {},
+        sockets: [],
+        messages: [],
+        starts: [],
+        current: null,
+        state: "idle",
+        autoAccept: true,
+        statusReads: 0,
+        taskReads: 0,
+        holdFirstSnapshot: false,
+        continuable: undefined,
+      };
+      s.snapshot = (socket = s.sockets.at(-1), extra = {}) =>
+        socket?.send(
+          JSON.stringify({
+            type: "snapshot",
+            state: s.state,
+            task: s.current,
+            tasks: s.records.map(({ events, ...r }) => r),
+            continuable: s.continuable,
+            ...extra,
+          }),
+        );
+      await page.route("**/api/**", async (route) => {
         const p = new URL(route.request().url()).pathname;
-        if (p.startsWith("/api/tasks/")) { s.taskReads++; const id = p.split("/").at(-1); if (s.delays[id]) await s.delays[id]; const r = s.records.find(x => x.id === id); if (r && id !== "missing") await route.fulfill({ json: r }); else await route.fulfill({ status: 503, body: "unavailable" }); return; }
+        if (p.startsWith("/api/tasks/")) {
+          s.taskReads++;
+          const id = p.split("/").at(-1);
+          if (s.delays[id]) await s.delays[id];
+          const r = s.records.find((x) => x.id === id);
+          if (r && id !== "missing") await route.fulfill({ json: r });
+          else await route.fulfill({ status: 503, body: "unavailable" });
+          return;
+        }
         if (p === "/api/llm/status") {
           s.statusReads++;
           if (options.statusWait) await options.statusWait;
           if (options.statusCode) {
-            await route.fulfill({ status: options.statusCode, body: "model status unavailable" });
+            await route.fulfill({
+              status: options.statusCode,
+              body: "model status unavailable",
+            });
             return;
           }
         }
-        const data = p === "/api/tasks" ? s.records.map(({ events, ...r }) => r) : p === "/api/llm/status" ? { hasKey: true, model: "test" } : p === "/api/llm/models" ? { models: [] } : { hostname: "node", platform: "linux", username: "test", cwd: "/", version: "test" };
+        const data =
+          p === "/api/tasks"
+            ? s.records.map(({ events, ...r }) => r)
+            : p === "/api/llm/status"
+              ? { hasKey: true, model: "test" }
+              : p === "/api/llm/models"
+                ? { models: [] }
+                : {
+                    hostname: "node",
+                    platform: "linux",
+                    username: "test",
+                    cwd: "/",
+                    version: "test",
+                  };
         await route.fulfill({ json: data });
       });
-      await page.routeWebSocket("**/ws/term", sock => { sock.send(JSON.stringify({ type: "agent_state", state: "idle" })); sock.onMessage(() => {}); });
-      await page.routeWebSocket("**/ws/agent", sock => {
-        s.sockets.push(sock); if (!s.holdFirstSnapshot) s.snapshot(sock);
-        sock.onMessage(raw => { const m = JSON.parse(String(raw)); s.messages.push(m); if (m.type === "start") { s.starts.push(m); if (s.autoAccept) { s.current = { ...record(`new-${s.starts.length}`, "running", [{ id: 1, taskId: `new-${s.starts.length}`, type: "user", text: m.task }]), requestId: m.requestId }; s.records.unshift(s.current); s.state = "running"; s.snapshot(sock); } } });
+      await page.routeWebSocket("**/ws/term", (sock) => {
+        sock.send(JSON.stringify({ type: "agent_state", state: "idle" }));
+        sock.onMessage(() => {});
       });
-      await page.goto(`http://127.0.0.1:${previewPort}`); await page.locator("#task-input").waitFor();
-      if (records.length) await page.locator(".task-history-select").waitFor({ state: "attached" });
+      await page.routeWebSocket("**/ws/agent", (sock) => {
+        s.sockets.push(sock);
+        if (!s.holdFirstSnapshot) s.snapshot(sock);
+        sock.onMessage((raw) => {
+          const m = JSON.parse(String(raw));
+          s.messages.push(m);
+          if (m.type === "start") {
+            s.starts.push(m);
+            if (s.autoAccept) {
+              s.current = {
+                ...record(`new-${s.starts.length}`, "running", [
+                  {
+                    id: 1,
+                    taskId: `new-${s.starts.length}`,
+                    type: "user",
+                    text: m.task,
+                  },
+                ]),
+                requestId: m.requestId,
+              };
+              s.records.unshift(s.current);
+              s.state = "running";
+              s.snapshot(sock);
+            }
+          }
+        });
+      });
+      await page.goto(`http://127.0.0.1:${previewPort}`);
+      await page.locator("#task-input").waitFor();
+      if (records.length)
+        await page
+          .locator(".task-history-select")
+          .waitFor({ state: "attached" });
       await page.waitForTimeout(100);
       return { page, context, s };
     }
@@ -50,11 +162,16 @@ const { spawn } = require("node:child_process");
     test("stale history response cannot overwrite newer selection", async () => {
       const { page, context, s } = await setup();
       let release;
-      s.delays.A = new Promise(resolve => { release = resolve; });
+      s.delays.A = new Promise((resolve) => {
+        release = resolve;
+      });
       const history = page.getByRole("combobox", { name: "任务历史" });
       await history.selectOption("A");
       await history.selectOption("B");
-      await page.locator("#agent-title").filter({ hasText: "任务 B" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 B" })
+        .waitFor();
       release();
       await page.waitForTimeout(120);
       assert.match(await page.locator("#agent-title").innerText(), /任务 B/);
@@ -63,13 +180,18 @@ const { spawn } = require("node:child_process");
     test("new task and its draft invalidate a delayed history read", async () => {
       const { page, context, s } = await setup();
       let release;
-      s.delays.A = new Promise(resolve => { release = resolve; });
+      s.delays.A = new Promise((resolve) => {
+        release = resolve;
+      });
       await page.getByRole("combobox", { name: "任务历史" }).selectOption("A");
       await page.getByRole("button", { name: "新建任务" }).click();
       await page.locator("#task-input").fill("新会话草稿");
       release();
       await page.waitForTimeout(120);
-      assert.equal(await page.locator("#task-input").inputValue(), "新会话草稿");
+      assert.equal(
+        await page.locator("#task-input").inputValue(),
+        "新会话草稿",
+      );
       assert.equal(await page.locator("#agent-title").innerText(), "部署任务");
       await context.close();
     });
@@ -80,7 +202,10 @@ const { spawn } = require("node:child_process");
       s.sockets.at(-1).close();
       await page.waitForTimeout(500);
       await page.locator("#task-input").fill("等待快照");
-      const button = page.getByRole("button", { name: "执行任务", exact: true });
+      const button = page.getByRole("button", {
+        name: "执行任务",
+        exact: true,
+      });
       assert.equal(await button.isDisabled(), true);
       await page.locator("#task-input").press("Enter");
       assert.equal(s.starts.length, 0);
@@ -95,23 +220,40 @@ const { spawn } = require("node:child_process");
       const input = page.locator("#task-input");
       await input.fill("A草稿");
       await history.selectOption("A");
-      await page.locator("#agent-title").filter({ hasText: "任务 A" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 A" })
+        .waitFor();
       await input.fill("A任务草稿");
       await history.selectOption("latest");
-      await page.locator("#agent-title").filter({ hasText: "任务 latest" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 latest" })
+        .waitFor();
       assert.equal(await input.inputValue(), "A草稿");
       await history.selectOption("A");
-      await page.locator("#agent-title").filter({ hasText: "任务 A" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 A" })
+        .waitFor();
       assert.equal(await input.inputValue(), "A任务草稿");
       await context.close();
     });
     test("failed history load keeps draft and retry repeats history GET", async () => {
-      const { page, context, s } = await setup([record("latest"), record("missing")]);
+      const { page, context, s } = await setup([
+        record("latest"),
+        record("missing"),
+      ]);
       const input = page.locator("#task-input");
       await input.fill("保留我");
-      await page.getByRole("combobox", { name: "任务历史" }).selectOption("missing");
+      await page
+        .getByRole("combobox", { name: "任务历史" })
+        .selectOption("missing");
       await page.waitForTimeout(300);
-      assert.match(await page.locator(".composer").innerText(), /任务记录读取失败/);
+      assert.match(
+        await page.locator(".composer").innerText(),
+        /任务记录读取失败/,
+      );
       const before = s.taskReads;
       const statusBefore = s.statusReads;
       await page.getByRole("button", { name: "重试" }).click();
@@ -124,30 +266,56 @@ const { spawn } = require("node:child_process");
     test("idle snapshot does not rewrite selected old task; global busy locks history", async () => {
       const old = record("old", "interrupted");
       const { page, context, s } = await setup([record("latest"), old]);
-      await page.getByRole("combobox", { name: "任务历史" }).selectOption("old");
-      await page.locator("#agent-title").filter({ hasText: "任务 old" }).waitFor();
+      await page
+        .getByRole("combobox", { name: "任务历史" })
+        .selectOption("old");
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 old" })
+        .waitFor();
       s.state = "idle";
       s.snapshot();
-      s.sockets.at(-1).send(JSON.stringify({ type: "run_state", state: "idle" }));
+      s.sockets
+        .at(-1)
+        .send(JSON.stringify({ type: "run_state", state: "idle" }));
       await page.waitForTimeout(100);
-      assert.match(await page.locator("#agent-panel [role=status]").last().innerText(), /进程重启后中断/);
+      assert.match(
+        await page.locator("#agent-panel [role=status]").last().innerText(),
+        /进程重启后中断/,
+      );
       s.state = "running";
       s.current = record("active", "running");
       s.snapshot();
       await page.locator(".composer-context").waitFor();
       await page.waitForTimeout(100);
-      assert.equal(await page.getByRole("combobox", { name: "任务历史" }).isDisabled(), true);
+      assert.equal(
+        await page.getByRole("combobox", { name: "任务历史" }).isDisabled(),
+        true,
+      );
       await context.close();
     });
     test("a late model-status success cannot remove a history error's retry", async () => {
       let releaseStatus;
-      const statusWait = new Promise(resolve => { releaseStatus = resolve; });
-      const { page, context, s } = await setup([record("latest"), record("missing")], { statusWait });
-      await page.getByRole("combobox", { name: "任务历史" }).selectOption("missing");
-      await page.getByRole("alert").filter({ hasText: "任务记录读取失败" }).waitFor();
+      const statusWait = new Promise((resolve) => {
+        releaseStatus = resolve;
+      });
+      const { page, context, s } = await setup(
+        [record("latest"), record("missing")],
+        { statusWait },
+      );
+      await page
+        .getByRole("combobox", { name: "任务历史" })
+        .selectOption("missing");
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "任务记录读取失败" })
+        .waitFor();
       releaseStatus();
       await page.locator(".model-button").filter({ hasText: "test" }).waitFor();
-      assert.equal(await page.getByRole("button", { name: "重试", exact: true }).count(), 1);
+      assert.equal(
+        await page.getByRole("button", { name: "重试", exact: true }).count(),
+        1,
+      );
       const taskReads = s.taskReads;
       await page.getByRole("button", { name: "重试", exact: true }).click();
       await page.waitForTimeout(100);
@@ -157,15 +325,31 @@ const { spawn } = require("node:child_process");
     });
     test("a history success cannot remove a later model-status error's retry", async () => {
       let releaseStatus, releaseHistory;
-      const statusWait = new Promise(resolve => { releaseStatus = resolve; });
-      const { page, context, s } = await setup([record("latest"), record("A")], { statusWait, statusCode: 503 });
-      s.delays.A = new Promise(resolve => { releaseHistory = resolve; });
+      const statusWait = new Promise((resolve) => {
+        releaseStatus = resolve;
+      });
+      const { page, context, s } = await setup(
+        [record("latest"), record("A")],
+        { statusWait, statusCode: 503 },
+      );
+      s.delays.A = new Promise((resolve) => {
+        releaseHistory = resolve;
+      });
       await page.getByRole("combobox", { name: "任务历史" }).selectOption("A");
       releaseStatus();
-      await page.getByRole("alert").filter({ hasText: "模型配置读取失败" }).waitFor();
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "模型配置读取失败" })
+        .waitFor();
       releaseHistory();
-      await page.locator("#agent-title").filter({ hasText: "任务 A" }).waitFor();
-      assert.equal(await page.getByRole("button", { name: "重试", exact: true }).count(), 1);
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 A" })
+        .waitFor();
+      assert.equal(
+        await page.getByRole("button", { name: "重试", exact: true }).count(),
+        1,
+      );
       const statusReads = s.statusReads;
       const taskReads = s.taskReads;
       await page.getByRole("button", { name: "重试", exact: true }).click();
@@ -181,12 +365,30 @@ const { spawn } = require("node:child_process");
       s.state = "running";
       s.current = record("active", "running");
       s.snapshot();
-      assert.equal(await page.locator("#agent-panel").getAttribute("data-empty"), "false");
-      assert.match(await page.locator("#agent-title").innerText(), /任务 active/);
-      assert.equal(await page.getByRole("button", { name: "停止任务" }).isVisible(), true);
-      assert.equal(await page.locator("#task-input").inputValue(), "新会话草稿");
-      assert.match(await page.locator(".composer-context").innerText(), /新会话/);
-      assert.match(await page.locator(".composer-context").innerText(), /不会发给后台任务/);
+      assert.equal(
+        await page.locator("#agent-panel").getAttribute("data-empty"),
+        "false",
+      );
+      assert.match(
+        await page.locator("#agent-title").innerText(),
+        /任务 active/,
+      );
+      assert.equal(
+        await page.getByRole("button", { name: "停止任务" }).isVisible(),
+        true,
+      );
+      assert.equal(
+        await page.locator("#task-input").inputValue(),
+        "新会话草稿",
+      );
+      assert.match(
+        await page.locator(".composer-context").innerText(),
+        /新会话/,
+      );
+      assert.match(
+        await page.locator(".composer-context").innerText(),
+        /不会发给后台任务/,
+      );
       await context.close();
     });
     test("unconfirmed start is retained across reconnect without automatic resend or target drift", async () => {
@@ -208,7 +410,10 @@ const { spawn } = require("node:child_process");
       await recovery.getByRole("button", { name: "载入待确认文本" }).click();
       assert.match(await recovery.innerText(), /不丢失的部署指令/);
       assert.equal(await input.inputValue(), "不丢失的部署指令");
-      assert.doesNotMatch(await page.locator("#agent-title").innerText(), /任务 previous/);
+      assert.doesNotMatch(
+        await page.locator("#agent-title").innerText(),
+        /任务 previous/,
+      );
       await context.close();
     });
     test("accepted start is recognized by requestId on reconnect and keeps a later draft", async () => {
@@ -237,7 +442,10 @@ const { spawn } = require("node:child_process");
       assert.equal(await input.inputValue(), "late accepted");
       s.records.unshift({ ...record("late", "finished"), requestId });
       s.snapshot();
-      await page.locator("#agent-title").filter({ hasText: "任务 late" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 late" })
+        .waitFor();
       await page.waitForTimeout(100);
       assert.equal(await input.inputValue(), "");
       assert.equal(s.starts.length, 1);
@@ -274,13 +482,19 @@ const { spawn } = require("node:child_process");
       s.records.unshift({ ...record("A", "finished"), requestId });
       s.records.unshift(record("B", "finished"));
       s.snapshot();
-      await page.locator("#agent-title").filter({ hasText: "任务 A" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 A" })
+        .waitFor();
       assert.equal(await input.inputValue(), "A的补充草稿 X");
       assert.equal(s.starts.length, 1);
       await context.close();
     });
     test("late confirmation after navigating to another history keeps that history's draft in place", async () => {
-      const { page, context, s } = await setup([record("previous"), record("B")]);
+      const { page, context, s } = await setup([
+        record("previous"),
+        record("B"),
+      ]);
       s.autoAccept = false;
       const input = page.locator("#task-input");
       await input.fill("请求 A");
@@ -292,7 +506,10 @@ const { spawn } = require("node:child_process");
       const history = page.locator(".task-history-select");
       await history.waitFor();
       await history.selectOption("B");
-      await page.locator("#agent-title").filter({ hasText: "任务 B" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 B" })
+        .waitFor();
       await input.fill("B的草稿");
       s.records.unshift({ ...record("A", "finished"), requestId });
       s.snapshot();
@@ -300,7 +517,10 @@ const { spawn } = require("node:child_process");
       assert.match(await page.locator("#agent-title").innerText(), /任务 B/);
       assert.equal(await input.inputValue(), "B的草稿");
       await history.selectOption("A");
-      await page.locator("#agent-title").filter({ hasText: "任务 A" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 A" })
+        .waitFor();
       assert.equal(await input.inputValue(), "请求 A");
       await context.close();
     });
@@ -308,7 +528,10 @@ const { spawn } = require("node:child_process");
       const { page, context, s } = await setup([record("A")]);
       s.continuable = "A";
       s.snapshot();
-      await page.locator("#agent-title").filter({ hasText: "任务 A" }).waitFor();
+      await page
+        .locator("#agent-title")
+        .filter({ hasText: "任务 A" })
+        .waitFor();
       s.autoAccept = false;
       const input = page.locator("#task-input");
       await input.fill("延续 A 的请求");
@@ -329,7 +552,9 @@ const { spawn } = require("node:child_process");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
       const requestId = s.starts[0].requestId;
       await input.fill("拒绝后写的新草稿");
-      s.sockets.at(-1).send(JSON.stringify({ type: "error", requestId, text: "模型繁忙" }));
+      s.sockets
+        .at(-1)
+        .send(JSON.stringify({ type: "error", requestId, text: "模型繁忙" }));
       await page.waitForTimeout(100);
       assert.equal(await input.inputValue(), "拒绝后写的新草稿");
       const recovery = page.locator(".composer .feedback[role=status]");
@@ -354,11 +579,17 @@ const { spawn } = require("node:child_process");
       assert.match(await input.inputValue(), /行一\n/);
       await page.evaluate(() => {
         const el = document.querySelector("#task-input");
-        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, keyCode: 229 }));
+        el.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            bubbles: true,
+            keyCode: 229,
+          }),
+        );
       });
       assert.equal(s.starts.length, 0);
       await page.getByRole("button", { name: "停止任务" }).click();
-      assert.ok(s.messages.some(message => message.type === "stop"));
+      assert.ok(s.messages.some((message) => message.type === "stop"));
       s.state = "idle";
       s.current.phase = "finished";
       s.snapshot();
@@ -367,7 +598,19 @@ const { spawn } = require("node:child_process");
       await context.close();
     });
     let failures = 0;
-    for (const [name, fn] of tests) { try { await fn(); console.log(`PASS ${name}`); } catch (error) { failures++; console.error(`FAIL ${name}: ${error.stack || error}`); } }
-    if (failures) process.exitCode = 1; else console.log(`${tests.length} task interaction checks passed`);
-  } finally { await browser?.close(); preview.kill(); }
+    for (const [name, fn] of tests) {
+      try {
+        await fn();
+        console.log(`PASS ${name}`);
+      } catch (error) {
+        failures++;
+        console.error(`FAIL ${name}: ${error.stack || error}`);
+      }
+    }
+    if (failures) process.exitCode = 1;
+    else console.log(`${tests.length} task interaction checks passed`);
+  } finally {
+    await browser?.close();
+    preview.kill();
+  }
 })();

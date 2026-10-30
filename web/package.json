@@ -9,7 +9,9 @@
     "test:integration": "npm run build && node tests/run-real-backend.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "format": "prettier --write src tests vite.config.ts",
+    "format:check": "prettier --check src tests vite.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-sc": "5.3.1",
@@ -26,6 +28,7 @@
     "@types/react-dom": "18.3.1",
     "@vitejs/plugin-react": "4.3.4",
     "playwright": "1.64.1",
+    "prettier": "3.9.10",
     "typescript": "5.6.3",
     "vite": "5.4.11"
   }

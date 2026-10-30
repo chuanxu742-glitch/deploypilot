@@ -81,10 +81,28 @@ test("merging output preserves boundaries around tool events", () => {
 
 test("real activity and execution evidence remain distinct and grouped by call id", () => {
   const events = [
-    { type: "activity", state: "generating", text: "等待模型生成", timestamp: 100 },
-    { type: "tool_call", tool: "run_command", callId: "c1", hostname: "node-a", cwd: "/srv/app", timestamp: 200 },
+    {
+      type: "activity",
+      state: "generating",
+      text: "等待模型生成",
+      timestamp: 100,
+    },
+    {
+      type: "tool_call",
+      tool: "run_command",
+      callId: "c1",
+      hostname: "node-a",
+      cwd: "/srv/app",
+      timestamp: 200,
+    },
     { type: "output", callId: "c1", text: "ready", timestamp: 250 },
-    { type: "tool_done", callId: "c1", durationMs: 50, exitCode: 0, timestamp: 300 },
+    {
+      type: "tool_done",
+      callId: "c1",
+      durationMs: 50,
+      exitCode: 0,
+      timestamp: 300,
+    },
   ];
   const timeline = buildTimeline(events);
   assert.equal(timeline[0].kind, "activity");
@@ -99,7 +117,9 @@ test("real activity and execution evidence remain distinct and grouped by call i
 });
 
 test("public assistant content remains a short progress message", () => {
-  const timeline = buildTimeline([{ type: "thinking", text: "我会先检查监听端口" }]);
+  const timeline = buildTimeline([
+    { type: "thinking", text: "我会先检查监听端口" },
+  ]);
   assert.equal(timeline[0].kind, "message");
   assert.equal(timeline[0].event.text, "我会先检查监听端口");
 });

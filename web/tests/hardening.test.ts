@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTimeline, isFailedFinal, normalizeEvents, type AgentEvent } from "../src/agent-state.ts";
+import {
+  buildTimeline,
+  isFailedFinal,
+  normalizeEvents,
+  type AgentEvent,
+} from "../src/agent-state.ts";
 import {
   onSessionExpired,
   notifySessionExpired,
@@ -8,10 +13,19 @@ import {
 } from "../src/api.ts";
 
 test("isFailedFinal flags only an explicit failed final event", () => {
-  assert.equal(isFailedFinal({ type: "final", success: false } as AgentEvent), true);
-  assert.equal(isFailedFinal({ type: "final", success: true } as AgentEvent), false);
+  assert.equal(
+    isFailedFinal({ type: "final", success: false } as AgentEvent),
+    true,
+  );
+  assert.equal(
+    isFailedFinal({ type: "final", success: true } as AgentEvent),
+    false,
+  );
   assert.equal(isFailedFinal({ type: "final" } as AgentEvent), false);
-  assert.equal(isFailedFinal({ type: "tool_done", success: false } as AgentEvent), false);
+  assert.equal(
+    isFailedFinal({ type: "tool_done", success: false } as AgentEvent),
+    false,
+  );
 });
 
 test("session-expired code matches the server's application close code", () => {
@@ -39,11 +53,20 @@ test("a follow-up in the same session renders as its own operator row", () => {
     { type: "thinking", text: "有的" },
     { type: "thinking", text: "，Python 3.11.9。" },
   ]);
-  assert.deepEqual(timeline.map((i) => i.kind), ["message", "final", "user", "message"]);
+  assert.deepEqual(
+    timeline.map((i) => i.kind),
+    ["message", "final", "user", "message"],
+  );
   const user = timeline[2];
-  assert.equal(user.kind === "user" && user.event.text, "当前电脑有python环境吗？");
+  assert.equal(
+    user.kind === "user" && user.event.text,
+    "当前电脑有python环境吗？",
+  );
   const reply = timeline[3];
-  assert.equal(reply.kind === "message" && reply.event.text, "有的，Python 3.11.9。");
+  assert.equal(
+    reply.kind === "message" && reply.event.text,
+    "有的，Python 3.11.9。",
+  );
 });
 
 test("stored streaming fragments render as one reply, not one line each", () => {
@@ -55,9 +78,14 @@ test("stored streaming fragments render as one reply, not one line each", () => 
     { id: 5, type: "thinking", text: "on 3.11.9。" },
   ];
   for (const events of [stored, normalizeEvents(stored)]) {
-    const messages = buildTimeline(events).filter((item) => item.kind === "message");
+    const messages = buildTimeline(events).filter(
+      (item) => item.kind === "message",
+    );
     assert.equal(messages.length, 1);
-    assert.equal(messages[0].kind === "message" && messages[0].event.text, "有的，当前电脑已安装 Python 3.11.9。");
+    assert.equal(
+      messages[0].kind === "message" && messages[0].event.text,
+      "有的，当前电脑已安装 Python 3.11.9。",
+    );
   }
   assert.equal(normalizeEvents(stored).length, 2);
 });
@@ -69,5 +97,10 @@ test("replies separated by a tool call stay separate", () => {
     { type: "tool_done", tool: "run_command", callId: "c1", exitCode: 0 },
     { type: "thinking", text: "检查完成" },
   ]);
-  assert.deepEqual(timeline.filter((i) => i.kind === "message").map((i) => i.kind === "message" && i.event.text), ["先检查", "检查完成"]);
+  assert.deepEqual(
+    timeline
+      .filter((i) => i.kind === "message")
+      .map((i) => i.kind === "message" && i.event.text),
+    ["先检查", "检查完成"],
+  );
 });

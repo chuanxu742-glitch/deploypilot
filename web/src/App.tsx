@@ -1,10 +1,29 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { authenticate, machineInfo, onSessionExpired, type MachineInfo } from "./api";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  authenticate,
+  machineInfo,
+  onSessionExpired,
+  type MachineInfo,
+} from "./api";
 import { Terminal, type TerminalConnection } from "./Terminal";
 import { AgentPanel, isBusy, phaseTone } from "./Agent";
 import type { TaskPhase } from "./agent-state";
 import { Icon } from "./Icon";
-import { clampSplitRatio, readPreference, readSplitRatio, resolveTheme, writePreference, type ThemeName } from "./ui-preferences";
+import {
+  clampSplitRatio,
+  readPreference,
+  readSplitRatio,
+  resolveTheme,
+  writePreference,
+  type ThemeName,
+} from "./ui-preferences";
 
 type AuthState =
   | { kind: "loading" }
@@ -19,16 +38,25 @@ export function App() {
   const [taskPhase, setTaskPhase] = useState<TaskPhase>("idle");
   const [terminal, setTerminal] = useState<TerminalConnection>("connecting");
   const [machine, setMachine] = useState<MachineInfo | null>(null);
-  const [theme, setTheme] = useState<ThemeName>(() => resolveTheme(readPreference("deploypilot:theme")));
+  const [theme, setTheme] = useState<ThemeName>(() =>
+    resolveTheme(readPreference("deploypilot:theme")),
+  );
   const appearanceRef = useRef<HTMLDialogElement>(null);
   const machineRef = useRef<HTMLDetailsElement>(null);
-  const [split, setSplit] = useState(() => readSplitRatio(readPreference("deploypilot:split")));
+  const [split, setSplit] = useState(() =>
+    readSplitRatio(readPreference("deploypilot:split")),
+  );
   const workspaceRef = useRef<HTMLElement>(null);
   const authed = auth.kind === "authed";
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      if (event.target instanceof Node && machineRef.current && !machineRef.current.contains(event.target)) machineRef.current.open = false;
+      if (
+        event.target instanceof Node &&
+        machineRef.current &&
+        !machineRef.current.contains(event.target)
+      )
+        machineRef.current.open = false;
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && machineRef.current?.open) {
@@ -38,7 +66,10 @@ export function App() {
     };
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("pointerdown", dismiss); document.removeEventListener("keydown", escape); };
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
   }, []);
 
   useEffect(() => {
@@ -48,7 +79,8 @@ export function App() {
         if (active) setAuth({ kind: ok ? "authed" : "unauthed" });
       })
       .catch((error) => {
-        if (active) setAuth({ kind: "error", message: authErrorMessage(error) });
+        if (active)
+          setAuth({ kind: "error", message: authErrorMessage(error) });
       });
     return () => {
       active = false;
@@ -72,8 +104,16 @@ export function App() {
   useEffect(() => {
     if (!authed) return;
     let active = true;
-    machineInfo().then((info) => { if (active) setMachine(info); }).catch(() => { if (active) setMachine(null); });
-    return () => { active = false; };
+    machineInfo()
+      .then((info) => {
+        if (active) setMachine(info);
+      })
+      .catch(() => {
+        if (active) setMachine(null);
+      });
+    return () => {
+      active = false;
+    };
   }, [auth.kind]);
 
   const resizeSplit = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -81,11 +121,25 @@ export function App() {
     if (!bounds) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     const style = getComputedStyle(workspaceRef.current!);
-    const usableWidth = bounds.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 12;
-    const update = (clientX: number) => setSplit(clampSplitRatio((clientX - bounds.left - parseFloat(style.paddingLeft)) / usableWidth, usableWidth));
+    const usableWidth =
+      bounds.width -
+      parseFloat(style.paddingLeft) -
+      parseFloat(style.paddingRight) -
+      12;
+    const update = (clientX: number) =>
+      setSplit(
+        clampSplitRatio(
+          (clientX - bounds.left - parseFloat(style.paddingLeft)) / usableWidth,
+          usableWidth,
+        ),
+      );
     update(event.clientX);
     const move = (moveEvent: PointerEvent) => update(moveEvent.clientX);
-    const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); window.removeEventListener("pointercancel", end); };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end, { once: true });
     window.addEventListener("pointercancel", end, { once: true });
@@ -123,38 +177,126 @@ export function App() {
             </button>
           </nav>
         )}
-        {authed && machine && <details ref={machineRef} className="machine-details"><summary><Icon name="system" size={16} /><span>{machine.hostname}</span><Icon name="chevron" size={14} /></summary><div><span>系统 {machine.platform}</span><span>用户 {machine.username}</span><span>启动目录 {machine.cwd}</span></div></details>}
-        {authed ? <>
-        <button className="icon-button theme-control" aria-label="外观设置" title="外观设置" onClick={() => appearanceRef.current?.showModal()}><Icon name="settings" size={18} /></button>
-        <dialog className="settings-dialog appearance-dialog" ref={appearanceRef} aria-labelledby="appearance-title" onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
-          <div className="dialog-content">
-            <div className="dialog-head"><h2 id="appearance-title">外观</h2><button className="icon-button" aria-label="关闭外观设置" onClick={() => appearanceRef.current?.close()}><Icon name="close" size={18} /></button></div>
-            <div className="theme-options" role="group" aria-label="外观">
-              {([['day', '日间'], ['night', '夜间'], ['comfort', '护眼']] as const).map(([value, label]) => <button key={value} className="theme-option" aria-pressed={theme === value} onClick={() => setTheme(value)}><span>{label}</span>{theme === value && <Icon name="check" size={16} />}</button>)}
+        {authed && machine && (
+          <details ref={machineRef} className="machine-details">
+            <summary>
+              <Icon name="system" size={16} />
+              <span>{machine.hostname}</span>
+              <Icon name="chevron" size={14} />
+            </summary>
+            <div>
+              <span>系统 {machine.platform}</span>
+              <span>用户 {machine.username}</span>
+              <span>启动目录 {machine.cwd}</span>
             </div>
-          </div>
-        </dialog>
-        </> : <span className="status-chip session">
-          <span
-            className="dot"
-            data-tone={
-              authed ? "ok" : auth.kind === "error" ? "bad" : ""
-            }
-          />
-          {renderAuthPill(auth)}
-        </span>}
+          </details>
+        )}
+        {authed ? (
+          <>
+            <button
+              className="icon-button theme-control"
+              aria-label="外观设置"
+              title="外观设置"
+              onClick={() => appearanceRef.current?.showModal()}
+            >
+              <Icon name="settings" size={18} />
+            </button>
+            <dialog
+              className="settings-dialog appearance-dialog"
+              ref={appearanceRef}
+              aria-labelledby="appearance-title"
+              onClick={(event) => {
+                if (event.target === event.currentTarget)
+                  event.currentTarget.close();
+              }}
+            >
+              <div className="dialog-content">
+                <div className="dialog-head">
+                  <h2 id="appearance-title">外观</h2>
+                  <button
+                    className="icon-button"
+                    aria-label="关闭外观设置"
+                    onClick={() => appearanceRef.current?.close()}
+                  >
+                    <Icon name="close" size={18} />
+                  </button>
+                </div>
+                <div className="theme-options" role="group" aria-label="外观">
+                  {(
+                    [
+                      ["day", "日间"],
+                      ["night", "夜间"],
+                      ["comfort", "护眼"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <button
+                      key={value}
+                      className="theme-option"
+                      aria-pressed={theme === value}
+                      onClick={() => setTheme(value)}
+                    >
+                      <span>{label}</span>
+                      {theme === value && <Icon name="check" size={16} />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </dialog>
+          </>
+        ) : (
+          <span className="status-chip session">
+            <span
+              className="dot"
+              data-tone={authed ? "ok" : auth.kind === "error" ? "bad" : ""}
+            />
+            {renderAuthPill(auth)}
+          </span>
+        )}
       </header>
       {authed ? (
-        <main ref={workspaceRef} className="workspace" data-view={view} style={{ "--terminal-ratio": `${split}fr`, "--task-ratio": `${1 - split}fr` } as CSSProperties}>
+        <main
+          ref={workspaceRef}
+          className="workspace"
+          data-view={view}
+          style={
+            {
+              "--terminal-ratio": `${split}fr`,
+              "--task-ratio": `${1 - split}fr`,
+            } as CSSProperties
+          }
+        >
           {/* Both panels stay mounted so switching views keeps the task and the shell. */}
           <section
             className="panel term-panel dark"
             id="terminal-panel"
             aria-label="远程终端"
           >
-            <Terminal theme={theme} taskActive={isBusy(taskPhase)} onConnectionChange={setTerminal} />
+            <Terminal
+              theme={theme}
+              taskActive={isBusy(taskPhase)}
+              onConnectionChange={setTerminal}
+            />
           </section>
-          <div className="splitter" role="separator" aria-label="调整面板宽度" aria-orientation="vertical" aria-valuemin={40} aria-valuemax={75} aria-valuenow={Math.round(split * 100)} tabIndex={0} onPointerDown={resizeSplit} onKeyDown={(event) => { if (event.key === "ArrowRight") { event.preventDefault(); setSplit((value) => clampSplitRatio(value + 0.02)); } else if (event.key === "ArrowLeft") { event.preventDefault(); setSplit((value) => clampSplitRatio(value - 0.02)); } }} />
+          <div
+            className="splitter"
+            role="separator"
+            aria-label="调整面板宽度"
+            aria-orientation="vertical"
+            aria-valuemin={40}
+            aria-valuemax={75}
+            aria-valuenow={Math.round(split * 100)}
+            tabIndex={0}
+            onPointerDown={resizeSplit}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowRight") {
+                event.preventDefault();
+                setSplit((value) => clampSplitRatio(value + 0.02));
+              } else if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                setSplit((value) => clampSplitRatio(value - 0.02));
+              }
+            }}
+          />
           <AgentPanel version={machine?.version} onPhaseChange={setTaskPhase} />
         </main>
       ) : (
@@ -225,7 +367,11 @@ function authErrorMessage(error: unknown): string {
   if (message.includes("pair failed: HTTP 409")) {
     return "目标机器已有其他活动会话，请在该会话结束后重试。";
   }
-  if (message.includes("Failed to fetch") || message.includes("NetworkError") || message.includes("网络")) {
+  if (
+    message.includes("Failed to fetch") ||
+    message.includes("NetworkError") ||
+    message.includes("网络")
+  ) {
     return "无法连接目标机器，请检查网络后重试。";
   }
   return message;
