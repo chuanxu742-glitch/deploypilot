@@ -473,11 +473,16 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			a.audit.Append(AuditEntry{Kind: "blocked", Command: args.Command, Note: reason})
 			return false, failure("BLOCKED: " + reason + ". Choose a safer approach.")
 		}
+		rewriteNote := ""
 		if runtime.GOOS == "windows" {
 			if blocked, reason := CheckPowerShell(args.Command); blocked {
 				emit(Event{Type: EventToolCall, Tool: name, Command: args.Command, Step: step})
 				a.audit.Append(AuditEntry{Kind: "blocked", Command: args.Command, Note: reason})
 				return false, failure("NOT RUN: " + reason + ".")
+			}
+			if rewritten, ok := RewritePowerShellChain(args.Command); ok {
+				rewriteNote = "[note: Windows PowerShell 5.1 has no && or ||; ran it as: " + rewritten + "]\n"
+				args.Command = rewritten
 			}
 		}
 
@@ -495,6 +500,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			emit(Event{Type: EventOutput, Text: chunk})
 		})
 		a.audit.Append(AuditEntry{Kind: "command", Command: args.Command, ExitCode: exit, Output: out})
+		out = rewriteNote + out
 		failureState = toolTerminationState(err)
 		failureLogPath = commandOutputLogPath(out)
 		emit(Event{Type: EventToolDone, Tool: name, ExitCode: exit, Success: err == nil && exit == 0, Step: step, State: failureState, LogPath: failureLogPath})

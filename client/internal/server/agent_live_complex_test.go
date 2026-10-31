@@ -427,6 +427,9 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	if runtime.GOOS != "windows" {
 		t.Skip("scenarios are written for Windows PowerShell")
 	}
+	// The terminal starts in the process directory. Keep relative writes such
+	// as `2> server.err` out of the repository.
+	t.Chdir(t.TempDir())
 	srv, cookie := newLLMServer(t)
 	srv.llm = llm.FromEnv()
 	srv.agentMaxSteps = 30

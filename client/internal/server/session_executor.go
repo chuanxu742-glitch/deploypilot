@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/deploypilot/deploypilot/internal/agent"
 	"os"
@@ -66,6 +67,14 @@ func (e *sessionExecutor) Run(ctx context.Context, command string, timeout time.
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	code, out, err := shell.Run(ctx, command, output)
+	if errors.Is(err, errShellEndedBeforeStart) {
+		// A command right after `exit` can reach the old shell in the few
+		// milliseconds before its exit is noticed. Nothing ran; use a new one.
+		if shell, err = e.server.sharedTerminal(); err != nil {
+			return -1, "", err
+		}
+		code, out, err = shell.Run(ctx, command, output)
+	}
 	if shell.restarted.CompareAndSwap(true, false) {
 		out = shellRestartNote + "\n" + out
 	}

@@ -43,6 +43,9 @@ func TestAgentLiveBrowser(t *testing.T) {
 	browserProfile := os.Getenv("USERPROFILE")
 	t.Setenv("USERPROFILE", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	// The terminal starts in the process directory. Keep relative writes such
+	// as `2> server.err` out of the repository; repo is already absolute.
+	t.Chdir(t.TempDir())
 
 	manager, err := auth.NewManager(auth.Options{})
 	if err != nil {

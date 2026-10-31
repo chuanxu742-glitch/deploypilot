@@ -64,6 +64,7 @@ type Server struct {
 	lastConvTaskID      string
 	conversations       map[string]*agent.Conversation
 	taskAcceptingSteers bool
+	gzipped             gzipCache
 }
 
 func (s *Server) acquireAgent() bool {
@@ -290,7 +291,8 @@ func (s *Server) handleSPA() http.Handler {
 		if upath == "" {
 			upath = "index.html"
 		}
-		if _, err := fs.Stat(s.assets, upath); err != nil {
+		info, err := fs.Stat(s.assets, upath)
+		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				// SPA fallback: serve index.html for unknown non-asset paths.
 				r2 := r.Clone(r.Context())
@@ -298,6 +300,10 @@ func (s *Server) handleSPA() http.Handler {
 				serveIndex(w, r2, s.assets)
 				return
 			}
+		}
+		if err == nil && !info.IsDir() {
+			s.serveAsset(w, r, upath, fileServer)
+			return
 		}
 		fileServer.ServeHTTP(w, r)
 	})

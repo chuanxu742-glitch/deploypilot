@@ -382,7 +382,7 @@ func (s *sharedShell) Write(data []byte) (int, error) {
 	defer s.inputMu.Unlock()
 	select {
 	case <-s.dead:
-		return 0, errors.New("terminal session ended")
+		return 0, errShellEndedBeforeStart
 	default:
 		// Focus and terminal capability replies do not edit the command line.
 		if !terminalReply.Match(data) {
@@ -400,6 +400,10 @@ func (s *sharedShell) Resize(rows, cols uint16) error {
 }
 
 const defaultShellCols = 100
+
+// errShellEndedBeforeStart means the shell was already gone before any of
+// the command reached it, so running it again on a new shell is safe.
+var errShellEndedBeforeStart = errors.New("terminal session ended")
 
 // commandLabel is the one-line echo of an Agent command in the terminal. A
 // label that wraps makes PSReadLine redraw the input, which prints the
@@ -493,7 +497,7 @@ func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(str
 			case <-busyDeadline:
 				return -1, "", errors.New("terminal appears busy with an interactive program (pager, editor, sudo/su, or an unfinished line); finish or exit it in the terminal, then retry")
 			case <-s.dead:
-				return -1, "", errors.New("terminal session ended")
+				return -1, "", errShellEndedBeforeStart
 			case <-wait.C:
 			}
 		}

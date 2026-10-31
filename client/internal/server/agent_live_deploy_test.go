@@ -28,6 +28,7 @@ func TestAgentLiveDeploy(t *testing.T) {
 		t.Skip("python not found")
 	}
 	model := llm.FromEnv()
+	t.Chdir(t.TempDir()) // the terminal starts here; keep relative writes out of the repo
 	srv, cookie := newLLMServer(t)
 	srv.llm = model
 	srv.agentMaxSteps = 20
