@@ -24,6 +24,8 @@ import {
   readSplitRatio,
   resolveTheme,
   writePreference,
+  isNarrowScreen,
+  NARROW_MEDIA_QUERY,
   type ThemeName,
 } from "./ui-preferences";
 
@@ -60,9 +62,7 @@ export function App() {
   const workspaceRef = useRef<HTMLElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
-  const [narrow, setNarrow] = useState(
-    () => window.matchMedia("(max-width: 820px)").matches,
-  );
+  const [narrow, setNarrow] = useState(isNarrowScreen);
   const authed = auth.kind === "authed";
 
   useEffect(() => {
@@ -138,17 +138,13 @@ export function App() {
   useEffect(() => {
     if (!sidebarOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (
-        event.key === "Escape" &&
-        window.matchMedia("(max-width: 820px)").matches
-      )
-        setSidebarOpen(false);
+      if (event.key === "Escape" && isNarrowScreen()) setSidebarOpen(false);
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [sidebarOpen]);
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 820px)");
+    const media = window.matchMedia(NARROW_MEDIA_QUERY);
     const closeDrawer = (event: MediaQueryListEvent) => {
       setNarrow(event.matches);
       if (event.matches) setSidebarOpen(false);

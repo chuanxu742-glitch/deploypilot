@@ -6,13 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
-	"github.com/deploypilot/deploypilot/internal/agent"
 	"github.com/deploypilot/deploypilot/internal/auth"
 	"github.com/deploypilot/deploypilot/internal/llm"
 )
@@ -22,30 +18,16 @@ import (
 // through the guard executor: file changes stay inside one temp directory and
 // only processes started by this test may be stopped.
 func TestAgentLiveBrowser(t *testing.T) {
-	if os.Getenv("DP_AGENT_LIVE") != "1" || os.Getenv("BAILU_API_KEY") == "" || os.Getenv("DP_BROWSER_INTEGRATION") != "1" {
-		t.Skip("set DP_AGENT_LIVE=1, DP_BROWSER_INTEGRATION=1 and BAILU_API_KEY after building web")
-	}
-	if runtime.GOOS != "windows" {
-		t.Skip("scenarios are written for Windows PowerShell")
-	}
-	repo, err := filepath.Abs("../../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assets := filepath.Join(repo, "client", "internal", "webui", "dist")
-	if _, err := os.Stat(filepath.Join(assets, "index.html")); err != nil {
-		t.Fatal("build web first: ", err)
-	}
+	requireLive(t, "DP_BROWSER_INTEGRATION")
+	requireWindows(t)
+	repo, assets := browserAssets(t)
 	out := os.Getenv("DP_LIVE_BROWSER_OUT")
 	if out == "" {
 		out = t.TempDir()
 	}
-	browserProfile := os.Getenv("USERPROFILE")
-	t.Setenv("USERPROFILE", t.TempDir())
+	browserProfile := isolateProfile(t)
 	t.Setenv("HOME", t.TempDir())
-	// The terminal starts in the process directory. Keep relative writes such
-	// as `2> server.err` out of the repository; repo is already absolute.
-	t.Chdir(t.TempDir())
+	leaveRepository(t) // repo and assets are already absolute
 
 	manager, err := auth.NewManager(auth.Options{})
 	if err != nil {
@@ -60,14 +42,7 @@ func TestAgentLiveBrowser(t *testing.T) {
 	})
 
 	work := t.TempDir()
-	protected := runningPIDs(t)
-	t.Cleanup(func() { stopLeftovers(t) })
-	g := newGuardExecutor(srv.newExecutor(), work, protected)
-	g.owned = func(pid int) bool {
-		p, ok := descendants(t)[pid]
-		return ok && p.name != "powershell.exe" && p.name != "conhost.exe"
-	}
-	srv.newExecutor = func() agent.Executor { return g }
+	g := installGuard(t, srv, srv.newExecutor(), work)
 
 	srv.mux.HandleFunc("/test/guard", func(w http.ResponseWriter, _ *http.Request) {
 		commands, hits := g.snapshot()
@@ -79,17 +54,13 @@ func TestAgentLiveBrowser(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", filepath.Join(repo, "web", "tests", "agent-live-model.browser.cjs"))
-	cmd.Env = append(os.Environ(),
+	cmd := browserScript(ctx, repo, "agent-live-model.browser.cjs", browserProfile,
 		"DP_TEST_URL="+host.URL,
 		"DP_TEST_TOKEN="+manager.Token(),
 		"DP_TEST_WORK="+work,
 		"DP_TEST_OUT="+out,
 		"BAILU_API_KEY=", // the browser script never needs the key
 	)
-	if browserProfile != "" {
-		cmd.Env = append(cmd.Env, "USERPROFILE="+browserProfile)
-	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err = cmd.Run()

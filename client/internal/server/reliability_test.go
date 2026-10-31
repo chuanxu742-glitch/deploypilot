@@ -138,7 +138,7 @@ func TestCookieLifetimeDelegatesToServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	auth.SetCookie(rec, sid, m.IdleTimeout())
+	auth.SetCookie(rec, sid)
 	cookies := rec.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].MaxAge != 0 || !cookies[0].Expires.IsZero() {
 		t.Fatalf("cookie expires before active server session: %+v", cookies)

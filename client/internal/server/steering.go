@@ -12,6 +12,8 @@ import (
 )
 
 const (
+	// maxTaskTextBytes bounds one task or follow-up message.
+	maxTaskTextBytes        = 64 * 1024
 	maxQueuedSteers         = 16
 	maxQueuedSteerBytes     = 64 * 1024
 	maxSteerTextBytes       = 16 * 1024

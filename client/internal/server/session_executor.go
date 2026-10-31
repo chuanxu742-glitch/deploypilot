@@ -62,7 +62,7 @@ func (e *sessionExecutor) Run(ctx context.Context, command string, timeout time.
 		return -1, "", err
 	}
 	if timeout <= 0 {
-		timeout = 10 * time.Minute
+		timeout = agent.DefaultCommandTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

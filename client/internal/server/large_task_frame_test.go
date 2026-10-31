@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // A pasted log at or over the text limit gets a readable rejection instead of
@@ -21,7 +23,7 @@ func TestLargeTaskTextIsRejectedWithAReason(t *testing.T) {
 			srv, cookie := newLLMServer(t)
 			conn := agentSocket(t, srv, cookie)
 			frame, _ := json.Marshal(agentClientMsg{Type: "start", Task: c.text, RequestID: "large-task-request-1"})
-			if err := conn.WriteMessage(1, frame); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
 				t.Fatal(err)
 			}
 			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))

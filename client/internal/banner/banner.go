@@ -260,44 +260,53 @@ func (in *Intro) animate(ctx context.Context, sc *scene) {
 	if !realtime {
 		interval = frameInterval
 	}
+	// stopped waits for wait (or not at all when it is nil) and reports
+	// whether the intro was cut short meanwhile.
+	stopped := func(wait <-chan time.Time) bool {
+		if wait == nil {
+			select {
+			case <-ctx.Done():
+				return true
+			case <-in.stop:
+				return true
+			default:
+				return false
+			}
+		}
+		select {
+		case <-wait:
+			return false
+		case <-ctx.Done():
+			return true
+		case <-in.stop:
+			return true
+		}
+	}
+	// Every exit path draws the final frame.
+	defer p.frame(forever)
 	start := time.Now()
 	for k := 0; ; k++ {
 		t := time.Duration(k) * interval
 		if realtime {
 			if wait := time.Until(start.Add(t)); wait > 0 {
 				timer := time.NewTimer(wait)
-				select {
-				case <-timer.C:
-				case <-ctx.Done():
-					timer.Stop()
-					p.frame(forever)
-					return
-				case <-in.stop:
-					timer.Stop()
-					p.frame(forever)
+				cut := stopped(timer.C)
+				timer.Stop()
+				if cut {
 					return
 				}
 			}
 			// A slow terminal drops frames instead of stretching the intro.
 			t = time.Since(start)
 			k = int(t / interval)
-		} else {
-			select {
-			case <-ctx.Done():
-				p.frame(forever)
-				return
-			case <-in.stop:
-				p.frame(forever)
-				return
-			default:
-			}
+		} else if stopped(nil) {
+			return
 		}
 		if t >= sc.end {
-			break
+			return
 		}
 		p.frame(t)
 	}
-	p.frame(forever)
 }
 
 // scene holds when each part of the banner appears. The scan runs along
@@ -920,14 +929,14 @@ func (p *Progress) resultLine(message string, tone progressTone) string {
 	marker, color := "", mutedColor
 	switch tone {
 	case progressSuccess:
-		marker, color = p.glyph("√", "+"), successColor
+		marker, color = successMarker(p.opts), successColor
 	case progressFailure:
-		marker, color = p.glyph("×", "x"), failureColor
+		marker, color = failureMarker(p.opts), failureColor
 	case progressCancelled:
 		marker = "-"
 	}
 	took := elapsed(time.Since(p.started))
-	room := p.room(len(margin) + 2 + 2 + len(took))
+	room := p.messageRoom(took)
 	if marker == "" {
 		room += 2
 	}
@@ -950,19 +959,16 @@ func (p *Progress) resultLine(message string, tone progressTone) string {
 	return line + style(p.opts, messageColor, false, false, message) + "  " + style(p.opts, mutedColor, false, false, took)
 }
 
-func (p *Progress) glyph(fancy, plain string) string {
-	if p.opts.Blocks {
-		return fancy
-	}
-	return plain
-}
+// unknownWidthRoom is the message width when the console width is unknown.
+const unknownWidthRoom = 72
 
-// room is how many columns are left for the message after reserved cells.
-func (p *Progress) room(reserved int) int {
+// messageRoom is how many columns are left for the message on a line laid
+// out as margin, a two-cell marker, the message, two spaces and took.
+func (p *Progress) messageRoom(took string) int {
 	if p.opts.Width <= 0 {
-		return 72
+		return unknownWidthRoom
 	}
-	return max(0, p.opts.Width-1-reserved)
+	return max(0, p.opts.Width-1-(len(margin)+2+2+len(took)))
 }
 
 func (p *Progress) fit(s string) string {
@@ -977,7 +983,7 @@ var asciiSpinner = []string{"|", "/", "-", "\\"}
 func (p *Progress) drawLocked() {
 	since := time.Since(p.started)
 	took := elapsed(since)
-	message := fitCells(p.message, p.room(len(margin)+2+2+len(took)))
+	message := fitCells(p.message, p.messageRoom(took))
 	var b strings.Builder
 	if !p.hidden {
 		b.WriteString("\x1b[?25l")

@@ -243,7 +243,7 @@ func TestSteerStopDefersUntilExplicitRestartContinuation(t *testing.T) {
 	mu.Lock()
 	last := requests[len(requests)-1]
 	mu.Unlock()
-	if strings.Index(last, "earlier queued requirement") < 0 || strings.Index(last, "earlier queued requirement") > strings.Index(last, "new explicit continuation") {
+	if earlier := strings.Index(last, "earlier queued requirement"); earlier < 0 || earlier > strings.Index(last, "new explicit continuation") {
 		t.Fatalf("deferred messages lost or reordered: %s", last)
 	}
 	if reason := restored.queueSteer(id, "earlier queued requirement", "deferred-one"); reason != "" {

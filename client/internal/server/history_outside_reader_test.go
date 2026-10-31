@@ -23,6 +23,7 @@ func TestHistorySurvivesABriefOutsideReader(t *testing.T) {
 	}
 	release := time.AfterFunc(300*time.Millisecond, func() { f.Close() })
 	defer release.Stop()
+	defer f.Close() // a failure before the timer must not block TempDir cleanup
 	srv.taskMu.Lock()
 	defer srv.taskMu.Unlock()
 	srv.tasks = append(srv.tasks, &taskRecord{ID: "abc", Title: "t", Phase: "finished", Events: []agent.Event{}})

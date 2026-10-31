@@ -8,11 +8,12 @@ import (
 
 	"github.com/deploypilot/deploypilot/internal/agent"
 	"github.com/deploypilot/deploypilot/internal/auth"
+	"github.com/gorilla/websocket"
 )
 
 // agentClientMsg is a control message from the browser.
 type agentClientMsg struct {
-	Type string `json:"type"` // start | stop
+	Type string `json:"type"` // start | steer | stop
 	Task string `json:"task"`
 	// ContinueFrom, when set on start, resumes that task's conversation.
 	ContinueFrom string `json:"continueFrom,omitempty"`
@@ -22,7 +23,14 @@ type agentClientMsg struct {
 	TaskID    string `json:"taskId,omitempty"`
 }
 
-const agentFrameLimit = 6*64*1024 + 4096
+// agentFrameLimit bounds one browser message. startTask enforces the 64 KiB
+// text limit with a readable reason. JSON escaping can grow text up to 6x
+// (\u00XX), so the frame limit must stay above that, or a pasted Windows
+// log closes the socket with no message.
+const agentFrameLimit = 6*maxTaskTextBytes + 4096
+
+// wsWriteTimeout bounds one WebSocket write to a slow viewer.
+const wsWriteTimeout = 10 * time.Second
 
 // The WebSocket observes the server-owned task. Closing a viewer never cancels it.
 func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
@@ -33,9 +41,6 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	defer s.track(r, conn)()
-	// startTask enforces the 64 KiB text limit with a readable reason. JSON
-	// escaping can grow text up to 6x (\u00XX), so the frame limit must stay
-	// above that, or a pasted Windows log closes the socket with no message.
 	conn.SetReadLimit(agentFrameLimit)
 	touch, stopSession := s.guardSession(r, conn)
 	defer stopSession()
@@ -51,10 +56,14 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	send := func(data []byte) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if err := conn.WriteMessage(1, data); err != nil {
+		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 			conn.Close()
 		}
+	}
+	sendJSON := func(v any) {
+		data, _ := json.Marshal(v)
+		send(data)
 	}
 	go func() {
 		defer close(writerDone)
@@ -84,11 +93,9 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		switch msg.Type {
 		case "steer":
 			if reason := s.queueSteer(msg.TaskID, msg.Task, msg.RequestID); reason != "" {
-				data, _ := json.Marshal(map[string]any{"type": "error", "taskId": msg.TaskID, "requestId": msg.RequestID, "text": reason})
-				send(data)
+				sendJSON(map[string]any{"type": "error", "taskId": msg.TaskID, "requestId": msg.RequestID, "text": reason})
 			} else {
-				data, _ := json.Marshal(map[string]any{"type": "steer_ack", "taskId": msg.TaskID, "requestId": msg.RequestID, "state": "queued"})
-				send(data)
+				sendJSON(map[string]any{"type": "steer_ack", "taskId": msg.TaskID, "requestId": msg.RequestID, "state": "queued"})
 			}
 		case "stop":
 			s.stopTask()
@@ -101,17 +108,12 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 				if msg.RequestID != "" {
 					rejection["requestId"] = msg.RequestID
 				}
-				data, _ := json.Marshal(rejection)
-				send(data)
+				sendJSON(rejection)
 				s.taskMu.Lock()
-				state := "idle"
-				if s.taskCancel != nil {
-					state = s.tasks[0].Phase
-				}
+				state := s.runStateLocked()
 				s.taskMu.Unlock()
 				if state == "idle" {
-					data, _ := json.Marshal(runStateMessage("idle", nil))
-					send(data)
+					sendJSON(runStateMessage("idle", nil))
 				}
 			}
 		}

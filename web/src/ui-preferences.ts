@@ -1,5 +1,10 @@
 export type ThemeName = "day" | "night" | "comfort";
 
+/** Phones and narrow windows; must match the 820px breakpoint in the CSS. */
+export const NARROW_MEDIA_QUERY = "(max-width: 820px)";
+export const isNarrowScreen = () =>
+  window.matchMedia(NARROW_MEDIA_QUERY).matches;
+
 const THEMES: ThemeName[] = ["day", "night", "comfort"];
 
 export function resolveTheme(saved: string | null): ThemeName {

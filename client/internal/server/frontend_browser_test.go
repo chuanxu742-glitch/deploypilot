@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,19 +20,9 @@ import (
 // The opt-in browser test serves the built application through the real HTTP
 // and WebSocket handlers. Its provider and executor cannot deploy anything.
 func TestFrontendBrowserIntegration(t *testing.T) {
-	if os.Getenv("DP_BROWSER_INTEGRATION") != "1" {
-		t.Skip("set DP_BROWSER_INTEGRATION=1 after building web to run Chrome integration")
-	}
-	repo, err := filepath.Abs("../../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assets := filepath.Join(repo, "client", "internal", "webui", "dist")
-	if _, err := os.Stat(filepath.Join(assets, "index.html")); err != nil {
-		t.Fatal("build web before running browser integration: ", err)
-	}
-	browserUserProfile := os.Getenv("USERPROFILE")
-	t.Setenv("USERPROFILE", t.TempDir())
+	requireBrowserIntegration(t)
+	repo, assets := browserAssets(t)
+	browserUserProfile := isolateProfile(t)
 	var requests atomic.Int32
 	release := make(chan struct{})
 	var once sync.Once
@@ -72,13 +60,7 @@ func TestFrontendBrowserIntegration(t *testing.T) {
 	defer host.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", filepath.Join(repo, "web", "tests", "real-backend.browser.cjs"))
-	cmd.Env = append(os.Environ(), "DP_TEST_URL="+host.URL, "DP_TEST_TOKEN="+manager.Token())
-	if browserUserProfile != "" {
-		// Keep the server's audit output isolated without changing Chrome's
-		// Windows profile root and its remote-debugging directory checks.
-		cmd.Env = append(cmd.Env, "USERPROFILE="+browserUserProfile)
-	}
+	cmd := browserScript(ctx, repo, "real-backend.browser.cjs", browserUserProfile, "DP_TEST_URL="+host.URL, "DP_TEST_TOKEN="+manager.Token())
 	output, err := cmd.CombinedOutput()
 	t.Log(string(output))
 	if err != nil {

@@ -2,17 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   checkSessionAfterDisconnect,
+  createRequestId,
   getTask,
   listTasks,
   llmStatus,
+  nextReconnectDelay,
   notifySessionExpired,
   wsURL,
+  RECONNECT_INITIAL_MS,
   SESSION_EXPIRED_CODE,
+  SOCKET_OPEN_TIMEOUT_MS,
   type AgentSnapshot,
   type LLMStatus,
+  type RunState,
   type TaskRecord,
   type TaskSummary,
 } from "./api";
+import { isNarrowScreen } from "./ui-preferences";
 import {
   applyAgentEvent,
   buildTimeline,
@@ -59,10 +65,59 @@ const examples: { label: string; task: string; icon: IconName }[] = [
 ];
 export const isBusy = (phase: TaskPhase) =>
   phase === "connecting" || phase === "running" || phase === "stopping";
-const formatDuration = (seconds: number) =>
+const formatElapsedSeconds = (seconds: number) =>
   seconds < 60
     ? `${seconds}秒`
     : `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, "0")}秒`;
+
+/** Draft slot for a session that has not been started yet. */
+const NEW_DRAFT_KEY = "__new__";
+/** Composer textarea growth limit; matches max-height in index.css. */
+const COMPOSER_MAX_HEIGHT_PX = 224;
+/** Distance from the bottom within which the log keeps following output. */
+const LOG_FOLLOW_THRESHOLD_PX = 48;
+
+const activityStateLabels: Record<string, string> = {
+  preparing: "收集环境",
+  generating: "等待模型",
+  executing: "执行工具",
+};
+
+const steerStateText: Record<SteerSubmission["state"], string> = {
+  sending: "正在确认补充是否接收",
+  queued: "补充已接收，当前执行步骤结束后应用",
+  applied: "补充已应用到模型上下文",
+  deferred: "补充尚未应用，手动继续此任务后处理",
+  rejected: "补充未接收",
+  uncertain: "补充接收状态未确认，不会自动重发",
+};
+
+/** A server run state, with any unknown value treated as idle. */
+const toRunState = (state: unknown): RunState =>
+  state === "running" || state === "stopping" ? state : "idle";
+
+/** The status line under the log, most specific condition first. */
+function runStatusLabel(s: {
+  connectionState: "connecting" | "connected" | "disconnected";
+  globalBusy: boolean;
+  selectedActive: boolean;
+  globalRunState: RunState;
+  activityLabel?: string;
+  phase: TaskPhase;
+  status: LLMStatus | null;
+}): string {
+  if (s.connectionState === "connecting") return "连接后台中";
+  if (s.connectionState !== "connected") return "后台断开，正在重连";
+  if (s.globalBusy && !s.selectedActive)
+    return "后台任务仍在执行，当前查看历史";
+  if (s.globalBusy && s.globalRunState === "stopping") return "等待后台清理";
+  if (s.globalBusy) return s.activityLabel ?? "后台任务执行中";
+  if (s.phase === "stopping") return "等待清理";
+  if (s.phase === "connecting") return "连接中";
+  if (s.phase === "idle" && s.status && !s.status.hasKey) return "未配置模型";
+  if (s.phase === "disconnected") return "连接断开";
+  return phaseLabels[s.phase];
+}
 
 function ContextTaskTitle({ text }: { text: string }) {
   return (
@@ -121,9 +176,7 @@ export function AgentPanel({
   const [pendingTitle, setPendingTitle] = useState("");
   const [phase, setPhase] = useState<TaskPhase>("idle");
   const [globalBusy, setGlobalBusy] = useState(false);
-  const [globalRunState, setGlobalRunState] = useState<
-    "idle" | "running" | "stopping"
-  >("idle");
+  const [globalRunState, setGlobalRunState] = useState<RunState>("idle");
   const [globalTaskTitle, setGlobalTaskTitle] = useState("");
   const [globalTaskId, setGlobalTaskId] = useState<string | null>(null);
   const phaseRef = useRef<TaskPhase>("idle");
@@ -146,7 +199,7 @@ export function AgentPanel({
     continueFrom?: string;
   } | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
-  const globalRunStateRef = useRef<AgentSnapshot["state"]>("idle");
+  const globalRunStateRef = useRef<RunState>("idle");
   const steerSubmissionsRef = useRef(new Map<string, SteerSubmission>());
   const [steerSubmissions, setSteerSubmissions] = useState<SteerSubmission[]>(
     [],
@@ -157,7 +210,7 @@ export function AgentPanel({
   const retryActionRef = useRef<(() => void) | null>(null);
   const [continuableId, setContinuableId] = useState("");
   const seenIdsRef = useRef(new Set<string>());
-  const retryDelayRef = useRef(300);
+  const retryDelayRef = useRef(RECONNECT_INITIAL_MS);
   const hasSnapshotRef = useRef(false);
   const socketSnapshotReadyRef = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
@@ -166,7 +219,7 @@ export function AgentPanel({
     const input = inputRef.current;
     if (!input) return;
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 224)}px`;
+    input.style.height = `${Math.min(input.scrollHeight, COMPOSER_MAX_HEIGHT_PX)}px`;
   }, [task]);
   const frame = useRef(0);
   const pending = useRef<AgentEvent[]>([]);
@@ -197,7 +250,7 @@ export function AgentPanel({
     phaseRef.current = value;
     setPhase(value);
   };
-  const draftKey = () => selectedIdRef.current ?? "__new__";
+  const draftKey = () => selectedIdRef.current ?? NEW_DRAFT_KEY;
   const updateRecoverySubmission = (value: RecoverySubmission | null) => {
     recoverySubmissionRef.current = value;
     setRecoverySubmission(value);
@@ -272,7 +325,7 @@ export function AgentPanel({
     const recovery = recoverySubmissionRef.current;
     const acceptedId = acceptedRecord?.id ?? acceptedSummary?.id;
     const originKey =
-      pendingStart?.continueFrom ?? recovery?.originKey ?? "__new__";
+      pendingStart?.continueFrom ?? recovery?.originKey ?? NEW_DRAFT_KEY;
     const isOriginSelected = draftKey() === originKey;
     if (pendingStart?.requestId === requestId) {
       pendingStartRef.current = null;
@@ -283,7 +336,7 @@ export function AgentPanel({
       if (originDraft && acceptedId)
         draftsRef.current.set(acceptedId, originDraft);
       if (!pendingStart.continueFrom) {
-        draftsRef.current.delete("__new__");
+        draftsRef.current.delete(NEW_DRAFT_KEY);
         if (acceptedId && isOriginSelected) {
           selectedIdRef.current = acceptedId;
           newTaskModeRef.current = false;
@@ -299,9 +352,9 @@ export function AgentPanel({
       )
         changeTask("");
       const originDraft = draftsRef.current.get(recovery.originKey) ?? "";
-      if (recovery.originKey === "__new__" && acceptedId) {
+      if (recovery.originKey === NEW_DRAFT_KEY && acceptedId) {
         if (originDraft) draftsRef.current.set(acceptedId, originDraft);
-        draftsRef.current.delete("__new__");
+        draftsRef.current.delete(NEW_DRAFT_KEY);
         if (stillViewingOrigin) {
           selectedIdRef.current = acceptedId;
           newTaskModeRef.current = false;
@@ -330,7 +383,7 @@ export function AgentPanel({
     }
     updatePhase(recordRef.current?.phase ?? "idle");
     const existingDraft = taskValueRef.current;
-    const originKey = pendingStart.continueFrom ?? "__new__";
+    const originKey = pendingStart.continueFrom ?? NEW_DRAFT_KEY;
     if (!existingDraft) {
       changeTask(pendingStart.text);
     }
@@ -584,11 +637,11 @@ export function AgentPanel({
       setSnapshotReady(false);
       const timeout = setTimeout(() => {
         if (socket.readyState !== WebSocket.OPEN) socket.close();
-      }, 12_000);
+      }, SOCKET_OPEN_TIMEOUT_MS);
       socket.onopen = () => {
         if (!active || socketRef.current !== socket) return;
         clearTimeout(timeout);
-        retryDelayRef.current = 300;
+        retryDelayRef.current = RECONNECT_INITIAL_MS;
         setConnectionState("connected");
       };
       socket.onmessage = (message) => {
@@ -597,7 +650,6 @@ export function AgentPanel({
           const value = JSON.parse(message.data);
           if (value?.type === "snapshot") {
             socketSnapshotReadyRef.current = true;
-            hasSnapshotRef.current = true;
             handleSnapshot(value as AgentSnapshot);
             return;
           }
@@ -625,22 +677,14 @@ export function AgentPanel({
             return;
           }
           if (event.type === "run_state") {
-            globalRunStateRef.current =
-              event.state === "running" || event.state === "stopping"
-                ? event.state
-                : "idle";
+            const runState = toRunState(event.state);
+            globalRunStateRef.current = runState;
             const matchingSelectedTask = !event.taskId
               ? !!activeTaskIdRef.current &&
                 activeTaskIdRef.current === recordRef.current?.id
               : event.taskId === recordRef.current?.id;
-            setGlobalBusy(
-              event.state === "running" || event.state === "stopping",
-            );
-            setGlobalRunState(
-              event.state === "running" || event.state === "stopping"
-                ? event.state
-                : "idle",
-            );
+            setGlobalBusy(runState !== "idle");
+            setGlobalRunState(runState);
             if (event.state === "idle") setGlobalTaskId(null);
             else if (event.taskId) setGlobalTaskId(event.taskId);
             if (matchingSelectedTask) {
@@ -695,13 +739,11 @@ export function AgentPanel({
           notifySessionExpired();
           return;
         }
-        void checkSessionAfterDisconnect().then((valid) => {
-          if (!valid || !active) return;
-        });
+        void checkSessionAfterDisconnect();
         // A close after a transmitted start leaves its identity and text pending.
         // The next connection's first snapshot decides whether it was accepted.
         const delay = retryDelayRef.current;
-        retryDelayRef.current = Math.min(5_000, delay * 2);
+        retryDelayRef.current = nextReconnectDelay(delay);
         reconnectTimer.current = setTimeout(connect, delay);
       };
     };
@@ -796,9 +838,7 @@ export function AgentPanel({
       )
     )
       return;
-    const requestId =
-      globalThis.crypto?.randomUUID?.() ??
-      `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const requestId = createRequestId();
     updateSteer({ taskId, requestId, text, state: "sending" });
     try {
       socket.send(
@@ -835,9 +875,7 @@ export function AgentPanel({
       historyRequestRef.current.controller?.abort();
       historyRequestRef.current.controller = null;
       showStatusError("");
-      const requestId =
-        globalThis.crypto?.randomUUID?.() ??
-        `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const requestId = createRequestId();
       const continueFrom =
         canContinue && recordRef.current ? recordRef.current.id : undefined;
       pendingStartRef.current = { requestId, text, continueFrom };
@@ -909,8 +947,7 @@ export function AgentPanel({
     selectedIdRef.current = null;
     setRecord(null);
     setPendingTitle("");
-    selectedIdRef.current = null;
-    changeTask(draftsRef.current.get("__new__") ?? "");
+    changeTask(draftsRef.current.get(NEW_DRAFT_KEY) ?? "");
     updatePhase("idle");
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -973,35 +1010,16 @@ export function AgentPanel({
     () => [...events].reverse().find((event) => event.type === "activity"),
     [events],
   );
-  const activityLabel =
-    activity?.text ??
-    (
-      {
-        preparing: "收集环境",
-        generating: "等待模型",
-        executing: "执行工具",
-      } as Record<string, string>
-    )[activity?.state ?? ""];
-  const label =
-    connectionState !== "connected"
-      ? connectionState === "connecting"
-        ? "连接后台中"
-        : "后台断开，正在重连"
-      : globalBusy && !selectedActive
-        ? "后台任务仍在执行，当前查看历史"
-        : globalBusy && globalRunState === "stopping"
-          ? "等待后台清理"
-          : globalBusy
-            ? (activityLabel ?? "后台任务执行中")
-            : phase === "stopping"
-              ? "等待清理"
-              : phase === "connecting"
-                ? "连接中"
-                : phase === "idle" && status && !status.hasKey
-                  ? "未配置模型"
-                  : phase === "disconnected"
-                    ? "连接断开"
-                    : phaseLabels[phase];
+  const label = runStatusLabel({
+    connectionState,
+    globalBusy,
+    selectedActive,
+    globalRunState,
+    activityLabel: activity?.text ?? activityStateLabels[activity?.state ?? ""],
+    phase,
+    status,
+  });
+  const stopping = globalRunState === "stopping" || phase === "stopping";
 
   const composer = (
     <div className="composer">
@@ -1092,17 +1110,9 @@ export function AgentPanel({
               role="status"
             >
               <span>
-                {submission.state === "sending"
-                  ? "正在确认补充是否接收"
-                  : submission.state === "queued"
-                    ? "补充已接收，当前执行步骤结束后应用"
-                    : submission.state === "applied"
-                      ? "补充已应用到模型上下文"
-                      : submission.state === "deferred"
-                        ? "补充尚未应用，手动继续此任务后处理"
-                        : submission.state === "rejected"
-                          ? (submission.message ?? "补充未接收")
-                          : "补充接收状态未确认，不会自动重发"}
+                {submission.state === "rejected"
+                  ? (submission.message ?? steerStateText.rejected)
+                  : steerStateText[submission.state]}
               </span>
               {submission.text &&
                 !["uncertain", "rejected", "deferred"].includes(
@@ -1226,7 +1236,7 @@ export function AgentPanel({
     </div>
   );
   const closeMobileSidebar = () => {
-    if (window.matchMedia("(max-width: 820px)").matches) {
+    if (isNarrowScreen()) {
       onShowTask();
       onCloseSidebar();
     }
@@ -1291,7 +1301,7 @@ export function AgentPanel({
                   element.scrollHeight -
                     element.scrollTop -
                     element.clientHeight <
-                    48,
+                    LOG_FOLLOW_THRESHOLD_PX,
                 );
             }}
           >
@@ -1331,27 +1341,19 @@ export function AgentPanel({
               <span role="status">{label}</span>
             </span>
             {seconds > 0 && (
-              <span className="meta-extra">{formatDuration(seconds)}</span>
+              <span className="meta-extra">
+                {formatElapsedSeconds(seconds)}
+              </span>
             )}
             {busy && (
               <button
                 className="button danger stop-compact"
-                aria-label={
-                  globalRunState === "stopping" || phase === "stopping"
-                    ? "正在停止…"
-                    : "停止任务"
-                }
+                aria-label={stopping ? "正在停止…" : "停止任务"}
                 onClick={stop}
-                disabled={
-                  globalRunState === "stopping" ||
-                  phase === "stopping" ||
-                  connectionState !== "connected"
-                }
+                disabled={stopping || connectionState !== "connected"}
               >
                 <Icon name="stop" size={14} />
-                {globalRunState === "stopping" || phase === "stopping"
-                  ? "正在停止"
-                  : "停止"}
+                {stopping ? "正在停止" : "停止"}
               </button>
             )}
           </div>

@@ -100,10 +100,3 @@ func TestStartBindsLoopback(t *testing.T) {
 		t.Fatalf("server must bind loopback, got %q", addr)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

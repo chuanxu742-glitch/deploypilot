@@ -2,163 +2,23 @@ const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
 const { mkdirSync } = require("node:fs");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const {
+  createSetup,
+  record,
+  runTests,
+  startVite,
+} = require("./support/mock-app.cjs");
 
 (async () => {
   const root = path.resolve(__dirname, "../..");
-  const previewPort = process.env.DP_TASK_PREVIEW_PORT || "4176";
-  const previewArgs = [
-    path.join(
-      path.dirname(require.resolve("vite/package.json")),
-      "bin/vite.js",
-    ),
-    ...(process.env.DP_TASK_DEV ? ["--clearScreen", "false"] : ["preview"]),
-    "--host",
-    "127.0.0.1",
-    "--port",
-    previewPort,
-    "--strictPort",
-  ];
-  if (process.env.DP_TASK_PREVIEW_DIR)
-    previewArgs.push("--outDir", path.resolve(process.env.DP_TASK_PREVIEW_DIR));
-  const preview = spawn(process.execPath, previewArgs, {
-    cwd: path.join(root, "web"),
-    stdio: "ignore",
+  const vite = await startVite({
+    defaultPort: "4176",
+    preview: !process.env.DP_TASK_DEV,
   });
   let browser;
   try {
-    let ready = false;
-    for (let i = 0; i < 100; i++) {
-      try {
-        if ((await fetch(`http://127.0.0.1:${previewPort}`)).ok) {
-          ready = true;
-          break;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    if (!ready)
-      throw new Error(`Preview server did not start on ${previewPort}`);
     browser = await chromium.launch({ channel: "chrome", headless: true });
-    const record = (id, phase = "finished", events = []) => ({
-      id,
-      title: `任务 ${id}`,
-      startedAt: Date.now() - 10000,
-      endedAt: Date.now(),
-      phase,
-      events,
-    });
-    async function setup(
-      records = [record("latest"), record("A"), record("B")],
-      options = {},
-    ) {
-      const context = await browser.newContext();
-      const page = await context.newPage();
-      page.setDefaultTimeout(5000);
-      const s = {
-        records,
-        delays: {},
-        sockets: [],
-        messages: [],
-        starts: [],
-        current: null,
-        state: "idle",
-        autoAccept: true,
-        statusReads: 0,
-        taskReads: 0,
-        holdFirstSnapshot: false,
-        continuable: undefined,
-      };
-      s.snapshot = (socket = s.sockets.at(-1), extra = {}) =>
-        socket?.send(
-          JSON.stringify({
-            type: "snapshot",
-            state: s.state,
-            task: s.current,
-            tasks: s.records.map(({ events, ...r }) => r),
-            continuable: s.continuable,
-            ...extra,
-          }),
-        );
-      await page.route("**/api/**", async (route) => {
-        const p = new URL(route.request().url()).pathname;
-        if (p.startsWith("/api/tasks/")) {
-          s.taskReads++;
-          const id = p.split("/").at(-1);
-          if (s.delays[id]) await s.delays[id];
-          const r = s.records.find((x) => x.id === id);
-          if (r && id !== "missing") await route.fulfill({ json: r });
-          else await route.fulfill({ status: 503, body: "unavailable" });
-          return;
-        }
-        if (p === "/api/llm/status") {
-          s.statusReads++;
-          if (options.statusWait) await options.statusWait;
-          if (options.statusCode) {
-            await route.fulfill({
-              status: options.statusCode,
-              body: "model status unavailable",
-            });
-            return;
-          }
-        }
-        const data =
-          p === "/api/tasks"
-            ? s.records.map(({ events, ...r }) => r)
-            : p === "/api/llm/status"
-              ? { hasKey: true, model: "test" }
-              : p === "/api/llm/models"
-                ? { models: [] }
-                : {
-                    hostname: "node",
-                    platform: "linux",
-                    username: "test",
-                    cwd: "/",
-                    version: "test",
-                  };
-        await route.fulfill({ json: data });
-      });
-      await page.routeWebSocket("**/ws/term", (sock) => {
-        sock.send(JSON.stringify({ type: "agent_state", state: "idle" }));
-        sock.onMessage(() => {});
-      });
-      await page.routeWebSocket("**/ws/agent", (sock) => {
-        s.sockets.push(sock);
-        if (!s.holdFirstSnapshot) s.snapshot(sock);
-        sock.onMessage((raw) => {
-          const m = JSON.parse(String(raw));
-          s.messages.push(m);
-          if (m.type === "start") {
-            s.starts.push(m);
-            if (s.autoAccept) {
-              s.current = {
-                ...record(`new-${s.starts.length}`, "running", [
-                  {
-                    id: 1,
-                    taskId: `new-${s.starts.length}`,
-                    type: "user",
-                    text: m.task,
-                  },
-                ]),
-                requestId: m.requestId,
-              };
-              s.records.unshift(s.current);
-              s.state = "running";
-              s.snapshot(sock);
-            }
-          }
-        });
-      });
-      await page.goto(`http://127.0.0.1:${previewPort}`);
-      await page.locator("#task-input").waitFor();
-      if (records.length)
-        await page
-          .locator(".session-item")
-          .first()
-          .waitFor({ state: "attached" });
-      await page.waitForTimeout(100);
-      return { page, context, s };
-    }
+    const setup = createSetup(browser, vite.url, { viewport: null });
     const tests = [];
     const test = (name, fn) => tests.push([name, fn]);
     const sessionItem = (page, id) =>
@@ -880,20 +740,11 @@ const { spawn } = require("node:child_process");
       );
       await context.close();
     });
-    let failures = 0;
-    for (const [name, fn] of tests) {
-      try {
-        await fn();
-        console.log(`PASS ${name}`);
-      } catch (error) {
-        failures++;
-        console.error(`FAIL ${name}: ${error.stack || error}`);
-      }
-    }
-    if (failures) process.exitCode = 1;
-    else console.log(`${tests.length} task interaction checks passed`);
+    await runTests(tests, (passed, total) =>
+      passed === total ? `${total} task interaction checks passed` : null,
+    );
   } finally {
     await browser?.close();
-    preview.kill();
+    vite.stop();
   }
 })();

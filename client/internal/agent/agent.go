@@ -410,7 +410,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			announced = true
 			e.Hostname, _ = os.Hostname()
 			e.Cwd, _ = os.Getwd()
-			if state, ok := a.exec.(interface{ WorkingDirectory() string }); ok {
+			if state, ok := a.exec.(workingDirectoryer); ok {
 				e.Cwd = state.WorkingDirectory()
 			}
 		}
@@ -447,7 +447,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		return false, failure(err.Error())
 	}
 	if err := validateToolArgs(name, tc.Function.Arguments); err != nil {
-		emit(Event{Type: EventToolCall, Tool: name, Step: step})
+		emit(Event{Type: EventToolCall, Tool: name})
 		return false, failure("invalid arguments: " + err.Error())
 	}
 	// Publishing can block on a slow socket; recheck cancellation after it,
@@ -464,21 +464,23 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 
 	switch name {
 	case toolRunCommand:
-		var args runCommandArgs
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return false, failure("invalid arguments: " + err.Error())
+		args, err := decodeArgs[runCommandArgs](tc)
+		if err != nil {
+			return false, failure(err.Error())
+		}
+		// A refused command is shown and audited, but never reaches the shell.
+		refuse := func(reason, message string) (bool, llm.Message) {
+			emit(Event{Type: EventToolCall, Tool: name, Command: args.Command})
+			a.audit.Append(AuditEntry{Kind: "blocked", Command: args.Command, Note: reason})
+			return false, failure(message)
 		}
 		if blocked, reason := CheckCommand(args.Command); blocked {
-			emit(Event{Type: EventToolCall, Tool: name, Command: args.Command, Step: step})
-			a.audit.Append(AuditEntry{Kind: "blocked", Command: args.Command, Note: reason})
-			return false, failure("BLOCKED: " + reason + ". Choose a safer approach.")
+			return refuse(reason, "BLOCKED: "+reason+". Choose a safer approach.")
 		}
 		rewriteNote := ""
 		if runtime.GOOS == "windows" {
 			if blocked, reason := CheckPowerShell(args.Command); blocked {
-				emit(Event{Type: EventToolCall, Tool: name, Command: args.Command, Step: step})
-				a.audit.Append(AuditEntry{Kind: "blocked", Command: args.Command, Note: reason})
-				return false, failure("NOT RUN: " + reason + ".")
+				return refuse(reason, "NOT RUN: "+reason+".")
 			}
 			if rewritten, ok := RewritePowerShellChain(args.Command); ok {
 				rewriteNote = "[note: Windows PowerShell 5.1 has no && or ||; ran it as: " + rewritten + "]\n"
@@ -488,12 +490,12 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 
 		timeoutSeconds := args.TimeoutSeconds
 		if timeoutSeconds <= 0 {
-			timeoutSeconds = 600
+			timeoutSeconds = int(DefaultCommandTimeout / time.Second)
 		}
-		if err := announce(Event{Type: EventToolCall, Tool: name, Command: args.Command, Step: step, TimeoutSeconds: timeoutSeconds}); err != nil {
+		if err := announce(Event{Type: EventToolCall, Tool: name, Command: args.Command, TimeoutSeconds: timeoutSeconds}); err != nil {
 			return false, failure(err.Error())
 		}
-		timeout := time.Duration(args.TimeoutSeconds) * time.Second
+		timeout := time.Duration(timeoutSeconds) * time.Second
 		a.verification = nil
 		a.noteCheck(tc.ID)
 		exit, out, err := a.exec.Run(ctx, args.Command, timeout, func(chunk string) {
@@ -540,8 +542,10 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		return false, withCwd(result(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out)))
 
 	case toolWaitFor:
-		var args waitForArgs
-		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		args, err := decodeArgs[waitForArgs](tc)
+		if err != nil {
+			return false, failure(err.Error())
+		}
 		command := args.Kind + ": " + args.Target
 		if args.Kind == "log" {
 			command += " contains: " + args.Contains
@@ -564,11 +568,11 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		return false, result(out)
 
 	case toolReadFile:
-		var args readFileArgs
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return false, failure("invalid arguments: " + err.Error())
+		args, err := decodeArgs[readFileArgs](tc)
+		if err != nil {
+			return false, failure(err.Error())
 		}
-		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path, Step: step}); err != nil {
+		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path}); err != nil {
 			return false, failure(err.Error())
 		}
 		r, err := a.exec.ReadFile(args.Path, args.Offset, args.MaxBytes)
@@ -576,67 +580,62 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		if err != nil {
 			return false, failure(err.Error())
 		}
-		emit(Event{Type: EventToolDone, Tool: name, Path: args.Path, Success: true, Step: step})
+		emit(Event{Type: EventToolDone, Tool: name, Path: args.Path, Success: true})
 		header := fmt.Sprintf("[file %s | size=%d bytes | shown %d-%d]", args.Path, r.Size, r.Offset, r.NextOffset)
 		if !r.EOF {
 			header += fmt.Sprintf(" more remains; read next with offset=%d", r.NextOffset)
 		}
 		return false, result(header + "\n" + r.Content)
 
-	case toolWriteFile:
-		var args writeFileArgs
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return false, failure("invalid arguments: " + err.Error())
+	case toolWriteFile, toolEditFile, toolAppendFile:
+		// File changes share one shape: announce the path, change the file,
+		// audit it, and invalidate earlier verification.
+		change := func(path string, apply func() (audit, reply string, err error)) (bool, llm.Message) {
+			if err := announce(Event{Type: EventToolCall, Tool: name, Path: path}); err != nil {
+				return false, failure(err.Error())
+			}
+			a.verification = nil
+			audit, reply, err := apply()
+			a.audit.Append(AuditEntry{Kind: name, Path: path, Output: audit})
+			if err != nil {
+				return false, failure(err.Error())
+			}
+			emit(Event{Type: EventToolDone, Tool: name, Path: path, Success: true})
+			return false, result(reply)
 		}
-		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path, Step: step}); err != nil {
-			return false, failure(err.Error())
+		switch name {
+		case toolWriteFile:
+			args, err := decodeArgs[writeFileArgs](tc)
+			if err != nil {
+				return false, failure(err.Error())
+			}
+			return change(args.Path, func() (string, string, error) {
+				return fmt.Sprintf("%d bytes", len(args.Content)), "ok: wrote " + args.Path, a.exec.WriteFile(args.Path, args.Content)
+			})
+		case toolEditFile:
+			args, err := decodeArgs[editFileArgs](tc)
+			if err != nil {
+				return false, failure(err.Error())
+			}
+			return change(args.Path, func() (string, string, error) {
+				count, err := a.exec.EditFile(args.Path, args.OldString, args.NewString, args.ReplaceAll)
+				return fmt.Sprintf("%d replacement(s)", count), fmt.Sprintf("ok: edited %s (%d replacement(s))", args.Path, count), err
+			})
+		default:
+			args, err := decodeArgs[appendFileArgs](tc)
+			if err != nil {
+				return false, failure(err.Error())
+			}
+			return change(args.Path, func() (string, string, error) {
+				return fmt.Sprintf("%d bytes", len(args.Content)), "ok: appended to " + args.Path, a.exec.AppendFile(args.Path, args.Content)
+			})
 		}
-		a.verification = nil
-		err := a.exec.WriteFile(args.Path, args.Content)
-		a.audit.Append(AuditEntry{Kind: "write_file", Path: args.Path, Output: fmt.Sprintf("%d bytes", len(args.Content))})
-		if err != nil {
-			return false, failure(err.Error())
-		}
-		emit(Event{Type: EventToolDone, Tool: name, Path: args.Path, Success: true, Step: step})
-		return false, result("ok: wrote " + args.Path)
-
-	case toolEditFile:
-		var args editFileArgs
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return false, failure("invalid arguments: " + err.Error())
-		}
-		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path, Step: step}); err != nil {
-			return false, failure(err.Error())
-		}
-		a.verification = nil
-		count, err := a.exec.EditFile(args.Path, args.OldString, args.NewString, args.ReplaceAll)
-		a.audit.Append(AuditEntry{Kind: "edit_file", Path: args.Path, Output: fmt.Sprintf("%d replacement(s)", count)})
-		if err != nil {
-			return false, failure(err.Error())
-		}
-		emit(Event{Type: EventToolDone, Tool: name, Path: args.Path, Success: true, Step: step})
-		return false, result(fmt.Sprintf("ok: edited %s (%d replacement(s))", args.Path, count))
-
-	case toolAppendFile:
-		var args appendFileArgs
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return false, failure("invalid arguments: " + err.Error())
-		}
-		if err := announce(Event{Type: EventToolCall, Tool: name, Path: args.Path, Step: step}); err != nil {
-			return false, failure(err.Error())
-		}
-		a.verification = nil
-		err := a.exec.AppendFile(args.Path, args.Content)
-		a.audit.Append(AuditEntry{Kind: "append_file", Path: args.Path, Output: fmt.Sprintf("%d bytes", len(args.Content))})
-		if err != nil {
-			return false, failure(err.Error())
-		}
-		emit(Event{Type: EventToolDone, Tool: name, Path: args.Path, Success: true, Step: step})
-		return false, result("ok: appended to " + args.Path)
 
 	case toolFinish:
-		var args finishArgs
-		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		args, err := decodeArgs[finishArgs](tc)
+		if err != nil {
+			return false, failure(err.Error())
+		}
 		summary := args.Summary
 		if args.Success {
 			evidence, err := a.finishEvidence(args.VerificationCallIDs)
@@ -662,10 +661,20 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 	}
 }
 
+// decodeArgs parses a tool call's JSON arguments. validateToolArgs has
+// already checked them, so an error here means a malformed call.
+func decodeArgs[T any](tc llm.ToolCall) (T, error) {
+	var args T
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return args, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return args, nil
+}
+
 // workingDirectory is the terminal's current directory when the executor
 // keeps one (the shared terminal does), otherwise "".
 func (a *Agent) workingDirectory() string {
-	if state, ok := a.exec.(interface{ WorkingDirectory() string }); ok {
+	if state, ok := a.exec.(workingDirectoryer); ok {
 		return state.WorkingDirectory()
 	}
 	return ""

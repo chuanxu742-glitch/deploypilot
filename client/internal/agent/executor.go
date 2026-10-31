@@ -54,6 +54,13 @@ type ReadResult struct {
 	FileInfo os.FileInfo
 }
 
+// DefaultCommandTimeout applies when a command sets no time limit.
+const DefaultCommandTimeout = 10 * time.Minute
+
+// workingDirectoryer is an executor that keeps a current directory (the
+// shared terminal does).
+type workingDirectoryer interface{ WorkingDirectory() string }
+
 // Executor runs the side-effecting operations the agent is allowed to perform.
 // It is an interface so tests can substitute a fake.
 type Executor interface {
@@ -95,7 +102,7 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 		output += CommandLogReference(commandLog.Path())
 	}()
 	if timeout <= 0 {
-		timeout = 10 * time.Minute
+		timeout = DefaultCommandTimeout
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

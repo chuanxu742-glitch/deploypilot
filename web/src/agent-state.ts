@@ -127,6 +127,18 @@ export type TimelineItem =
  * Output or completion without a preceding call (the call was trimmed by
  * MAX_EVENTS) becomes its own action so nothing is dropped.
  */
+/** The most recent action started by the tool call with this ID. */
+function findAction(
+  items: TimelineItem[],
+  callId: string,
+): ActionItem | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "action" && item.call?.callId === callId) return item;
+  }
+  return undefined;
+}
+
 export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   let open: ActionItem | null = null;
@@ -161,30 +173,14 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       open = { kind: "action", key, call: event };
       items.push(open);
     } else if (event.type === "output") {
-      if (event.callId) {
-        open =
-          [...items]
-            .reverse()
-            .find(
-              (item): item is ActionItem =>
-                item.kind === "action" && item.call?.callId === event.callId,
-            ) ?? null;
-      }
+      if (event.callId) open = findAction(items, event.callId) ?? null;
       if (!open || open.done || open.error !== undefined) {
         open = { kind: "action", key };
         items.push(open);
       }
       open.output = (open.output ?? "") + (event.text ?? "");
     } else if (event.type === "tool_done") {
-      if (event.callId) {
-        open =
-          [...items]
-            .reverse()
-            .find(
-              (item): item is ActionItem =>
-                item.kind === "action" && item.call?.callId === event.callId,
-            ) ?? null;
-      }
+      if (event.callId) open = findAction(items, event.callId) ?? null;
       if (!open || open.done) {
         open = { kind: "action", key };
         items.push(open);
@@ -192,12 +188,7 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       open.done = event;
     } else if (event.type === "error") {
       const target = event.callId
-        ? [...items]
-            .reverse()
-            .find(
-              (item): item is ActionItem =>
-                item.kind === "action" && item.call?.callId === event.callId,
-            )
+        ? findAction(items, event.callId)
         : open && !open.done && open.error === undefined
           ? open
           : undefined;
@@ -226,8 +217,6 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       if (event.type === "user") items.push({ kind: "user", key, event });
       else if (event.type === "status")
         items.push({ kind: "note", key, event });
-      else if (event.type === "error")
-        items.push({ kind: "error", key, event });
       else if (event.type === "final")
         items.push({ kind: "final", key, event });
     }

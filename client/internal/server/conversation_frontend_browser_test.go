@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -23,19 +22,9 @@ import (
 // requests for operator input, and a real failed finish through Go HTTP/WS
 // handlers and Chrome. The model and executor are local test substitutes.
 func TestConversationFrontendBrowserIntegration(t *testing.T) {
-	if os.Getenv("DP_BROWSER_INTEGRATION") != "1" {
-		t.Skip("opt-in Chrome integration")
-	}
-	repo, err := filepath.Abs("../../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assets := filepath.Join(repo, "client", "internal", "webui", "dist")
-	if _, err := os.Stat(filepath.Join(assets, "index.html")); err != nil {
-		t.Fatal("build web before running browser integration: ", err)
-	}
-	browserProfile := os.Getenv("USERPROFILE")
-	t.Setenv("USERPROFILE", t.TempDir())
+	requireBrowserIntegration(t)
+	repo, assets := browserAssets(t)
+	browserProfile := isolateProfile(t)
 	helloPath := filepath.Join(t.TempDir(), "hello.py")
 	if err := os.WriteFile(helloPath, []byte("print(\"Hello, World!\")\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -106,11 +95,7 @@ func TestConversationFrontendBrowserIntegration(t *testing.T) {
 	defer host.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", filepath.Join(repo, "web", "tests", "conversation-real-backend.browser.cjs"))
-	cmd.Env = append(os.Environ(), "DP_TEST_URL="+host.URL, "DP_TEST_TOKEN="+manager.Token())
-	if browserProfile != "" {
-		cmd.Env = append(cmd.Env, "USERPROFILE="+browserProfile)
-	}
+	cmd := browserScript(ctx, repo, "conversation-real-backend.browser.cjs", browserProfile, "DP_TEST_URL="+host.URL, "DP_TEST_TOKEN="+manager.Token())
 	output, err := cmd.CombinedOutput()
 	t.Log(string(output))
 	if err != nil {

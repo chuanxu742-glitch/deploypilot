@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,15 +19,9 @@ import (
 // Short authentication expiry makes a silent wait cross the boundary without
 // running a half-hour test. The model and executor remain local substitutes.
 func TestWaitForFrontendBrowserIntegration(t *testing.T) {
-	if os.Getenv("DP_BROWSER_INTEGRATION") != "1" {
-		t.Skip("opt-in Chrome integration")
-	}
-	repo, err := filepath.Abs("../../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	browserProfile := os.Getenv("USERPROFILE")
-	t.Setenv("USERPROFILE", t.TempDir())
+	requireBrowserIntegration(t)
+	repo, assets := browserAssets(t)
+	browserProfile := isolateProfile(t)
 	var ready atomic.Bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if ready.Load() {
@@ -60,7 +52,7 @@ func TestWaitForFrontendBrowserIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(Options{Version: "wait-integration", Assets: os.DirFS(filepath.Join(repo, "client/internal/webui/dist")), Auth: manager, LLM: llm.New(llm.Config{BaseURL: provider.URL, APIKey: "test-only"}), HistoryDir: t.TempDir()})
+	srv := New(Options{Version: "wait-integration", Assets: os.DirFS(assets), Auth: manager, LLM: llm.New(llm.Config{BaseURL: provider.URL, APIKey: "test-only"}), HistoryDir: t.TempDir()})
 	srv.newExecutor = func() agent.Executor { return commandExecutor{} }
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -74,11 +66,7 @@ func TestWaitForFrontendBrowserIntegration(t *testing.T) {
 	defer host.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", filepath.Join(repo, "web/tests/wait-real-backend.browser.cjs"))
-	cmd.Env = append(os.Environ(), "DP_TEST_URL="+host.URL, "DP_TEST_TOKEN="+manager.Token())
-	if browserProfile != "" {
-		cmd.Env = append(cmd.Env, "USERPROFILE="+browserProfile)
-	}
+	cmd := browserScript(ctx, repo, "wait-real-backend.browser.cjs", browserProfile, "DP_TEST_URL="+host.URL, "DP_TEST_TOKEN="+manager.Token())
 	output, err := cmd.CombinedOutput()
 	t.Log(string(output))
 	if err != nil {

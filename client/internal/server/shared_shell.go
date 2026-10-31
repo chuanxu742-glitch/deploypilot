@@ -306,28 +306,6 @@ func cloneChunks(chunks [][]byte) [][]byte {
 	}
 	return cloned
 }
-func atomicPrivateWrite(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".history-*")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	defer os.Remove(name)
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(data)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return replaceFile(name, path)
-}
 
 // shellFeed is one viewer's live output. When the viewer cannot keep up with a
 // burst (apt, pip or docker progress over a slow tunnel), output is dropped
@@ -399,49 +377,16 @@ func (s *sharedShell) Resize(rows, cols uint16) error {
 	return nil
 }
 
-const defaultShellCols = 100
+// The shell can end between commands (`exit`, a crash) or while one runs.
+var (
+	// errShellEndedBeforeStart: none of the command reached the shell, so it
+	// is safe to run it again on a new one. Write returns it for manual
+	// keyboard input too.
+	errShellEndedBeforeStart = errors.New("terminal session ended")
+	// errShellEndedDuringRun: the command may have partly run; never retry.
+	errShellEndedDuringRun = errors.New("terminal session ended while executing command")
+)
 
-// errShellEndedBeforeStart means the shell was already gone before any of
-// the command reached it, so running it again on a new shell is safe.
-var errShellEndedBeforeStart = errors.New("terminal session ended")
-
-// commandLabel is the one-line echo of an Agent command in the terminal. A
-// label that wraps makes PSReadLine redraw the input, which prints the
-// command two or three times; the full command is in the task timeline.
-func commandLabel(command string, cols int) string {
-	label := strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
-			return ' '
-		}
-		return r
-	}, command)
-	// "> . dp # " plus "..." and one spare cell.
-	limit := min(180, max(16, cols-len("> . dp # ")-4))
-	width, cut := 0, -1
-	for i, r := range label {
-		w := 1
-		if r >= 0x1100 && runeIsWide(r) {
-			w = 2
-		}
-		if width+w > limit {
-			cut = i
-			break
-		}
-		width += w
-	}
-	if cut >= 0 {
-		label = label[:cut] + "..."
-	}
-	return label
-}
-
-// runeIsWide covers the East Asian ranges a terminal draws two cells wide.
-func runeIsWide(r rune) bool {
-	return (r >= 0x1100 && r <= 0x115F) || (r >= 0x2E80 && r <= 0xA4CF) ||
-		(r >= 0xAC00 && r <= 0xD7A3) || (r >= 0xF900 && r <= 0xFAFF) ||
-		(r >= 0xFE30 && r <= 0xFE4F) || (r >= 0xFF00 && r <= 0xFF60) ||
-		(r >= 0xFFE0 && r <= 0xFFE6) || (r >= 0x20000 && r <= 0x3FFFD)
-}
 func (s *sharedShell) Cwd() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -683,7 +628,7 @@ try {
 			_ = s.session.Close()
 			return -1, capturedOutput(), fmt.Errorf("command cancelled; terminal session closed: %w", cancelled)
 		case <-s.dead:
-			return -1, capturedOutput(), errors.New("terminal session ended while executing command")
+			return -1, capturedOutput(), errShellEndedDuringRun
 		case <-completed:
 			outputComplete = true
 			completed = nil

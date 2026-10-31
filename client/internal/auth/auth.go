@@ -259,7 +259,7 @@ func (m *Manager) expireSessionLocked() {
 
 // SetCookie uses a browser-session cookie. The server owns the sliding idle
 // deadline, including activity over WebSockets which cannot renew HTTP cookies.
-func SetCookie(w http.ResponseWriter, sid string, _ time.Duration) {
+func SetCookie(w http.ResponseWriter, sid string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    sid,

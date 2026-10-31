@@ -160,14 +160,20 @@ func (s *Server) summariesLocked() []taskRecord {
 	}
 	return result
 }
+
+// runStateLocked is the phase of the running task, or "idle".
+func (s *Server) runStateLocked() string {
+	if s.taskCancel != nil && len(s.tasks) > 0 {
+		return s.tasks[0].Phase
+	}
+	return "idle"
+}
+
 func (s *Server) snapshotLocked() any {
-	state := "idle"
+	state := s.runStateLocked()
 	var task *taskRecord
 	if len(s.tasks) > 0 {
 		task = s.tasks[0]
-		if s.taskCancel != nil {
-			state = task.Phase
-		}
 	}
 	snapshot := map[string]any{"type": "snapshot", "state": state, "task": task, "tasks": s.summariesLocked()}
 	// Preserve the original single-ID hint for older browsers. New browsers use
@@ -311,7 +317,7 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	if strings.TrimSpace(text) == "" {
 		return "任务内容不能为空。"
 	}
-	if len(text) > 64*1024 {
+	if len(text) > maxTaskTextBytes {
 		return "任务内容不能超过64KiB。"
 	}
 	var resume *agent.Conversation
@@ -397,14 +403,7 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	s.taskAcceptingSteers = true
 	if s.auth != nil && owner != "" {
 		go func() {
-			interval := s.auth.IdleTimeout() / 4
-			if interval > time.Second {
-				interval = time.Second
-			}
-			if interval <= 0 {
-				interval = time.Millisecond
-			}
-			ticker := time.NewTicker(interval)
+			ticker := time.NewTicker(s.sessionCheckInterval())
 			defer ticker.Stop()
 			for {
 				select {

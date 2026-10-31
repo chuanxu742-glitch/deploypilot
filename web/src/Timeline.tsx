@@ -26,7 +26,7 @@ const toolIcons: Record<string, IconName> = {
 };
 
 /** An operator message: the original task or a follow-up in the same session. */
-export function OperatorTurn({
+function OperatorTurn({
   text,
   followUp = false,
 }: {
@@ -42,13 +42,7 @@ export function OperatorTurn({
   );
 }
 
-export function TimelineRow({
-  item,
-  live,
-}: {
-  item: TimelineItem;
-  live: boolean;
-}) {
+function TimelineRow({ item, live }: { item: TimelineItem; live: boolean }) {
   switch (item.kind) {
     case "action":
       return <ActionRow item={item} live={live} />;

@@ -1436,9 +1436,6 @@ input::placeholder,
   }
 }
 @media (max-width: 420px) {
-  .history-label {
-    display: none;
-  }
   .examples {
     grid-template-columns: 1fr;
   }
@@ -1467,8 +1464,5 @@ input::placeholder,
   }
   .examples {
     margin-top: 12px;
-  }
-  .composer textarea {
-    max-height: 120px;
   }
 }

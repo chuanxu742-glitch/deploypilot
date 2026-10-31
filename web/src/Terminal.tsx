@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
   checkSessionAfterDisconnect,
+  nextReconnectDelay,
   notifySessionExpired,
   wsURL,
+  RECONNECT_INITIAL_MS,
   SESSION_EXPIRED_CODE,
+  SOCKET_OPEN_TIMEOUT_MS,
 } from "./api";
 import { Icon } from "./Icon";
 import { Terminal as XTerm } from "@xterm/xterm";
@@ -30,6 +33,9 @@ import "@xterm/xterm/css/xterm.css";
 import type { ThemeName } from "./ui-preferences";
 
 export type TerminalConnection = "connecting" | "connected" | "disconnected";
+
+/** Large pastes are split: the server closes terminal frames over 64 KiB. */
+const PASTE_CHUNK_BYTES = 32 * 1024;
 
 // Match the surrounding terminal surface in index.css; changing the palette
 // updates the existing xterm so scrollback and the shell connection survive.
@@ -148,7 +154,7 @@ export function Terminal({
     let resizeFrame = 0;
     let connectTimer: ReturnType<typeof setTimeout>;
     let retryTimer: ReturnType<typeof setTimeout>;
-    let retryDelay = 300;
+    let retryDelay = RECONNECT_INITIAL_MS;
     let clipboardTimer: ReturnType<typeof setTimeout>;
     const encoder = new TextEncoder();
     const clipboardFeedback = (message: string) => {
@@ -211,14 +217,14 @@ export function Terminal({
       socket = current;
       connectTimer = setTimeout(() => {
         if (current.readyState !== WebSocket.OPEN) current.close();
-      }, 12_000);
+      }, SOCKET_OPEN_TIMEOUT_MS);
       current.onopen = () => {
         if (disposed || socket !== current) {
           current.close();
           return;
         }
         clearTimeout(connectTimer);
-        retryDelay = 300;
+        retryDelay = RECONNECT_INITIAL_MS;
         setConnection("connected");
         sendResize();
       };
@@ -271,23 +277,22 @@ export function Terminal({
         // returns the app to pairing, which unmounts this component.
         void checkSessionAfterDisconnect();
         const delay = retryDelay;
-        retryDelay = Math.min(5_000, delay * 2);
+        retryDelay = nextReconnectDelay(delay);
         retryTimer = setTimeout(connect, delay);
       };
     };
     reconnectRef.current = () => {
       clearTimeout(retryTimer);
-      retryDelay = 300;
+      retryDelay = RECONNECT_INITIAL_MS;
       connect();
     };
 
     const dataSubscription = term.onData((data) => {
       if (taskActiveRef.current || agentStateRef.current !== "idle") return;
       if (socket?.readyState !== WebSocket.OPEN) return;
-      // The server closes frames over 64 KiB; split large pastes.
       const bytes = encoder.encode(data);
-      for (let i = 0; i < bytes.length; i += 32 * 1024)
-        socket.send(bytes.subarray(i, i + 32 * 1024));
+      for (let i = 0; i < bytes.length; i += PASTE_CHUNK_BYTES)
+        socket.send(bytes.subarray(i, i + PASTE_CHUNK_BYTES));
     });
     const onResize = () => {
       if (!element.clientWidth || !element.clientHeight || disposed) return;

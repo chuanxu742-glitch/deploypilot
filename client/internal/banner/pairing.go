@@ -184,20 +184,26 @@ func status(opts Options, tone Tone, message, detail string, now time.Time) stri
 }
 
 func toneStyle(opts Options, tone Tone) (marker string, markerColor, messageColor rgb) {
-	pick := func(fancy, plain string) string {
-		if opts.Blocks {
-			return fancy
-		}
-		return plain
-	}
 	switch tone {
 	case ToneSuccess:
-		return pick("√", "+"), successColor, textColor
+		return successMarker(opts), successColor, textColor
 	case ToneWarning:
 		return "!", warningColor, textColor
 	case ToneFailure:
-		return pick("×", "x"), failureColor, textColor
+		return failureMarker(opts), failureColor, textColor
 	default:
-		return pick("·", "-"), mutedColor, mutedColor
+		return glyph(opts, "·", "-"), mutedColor, mutedColor
 	}
 }
+
+// glyph picks the symbol when the console draws it one cell wide, and the
+// ASCII fallback otherwise.
+func glyph(opts Options, fancy, plain string) string {
+	if opts.Blocks {
+		return fancy
+	}
+	return plain
+}
+
+func successMarker(opts Options) string { return glyph(opts, "√", "+") }
+func failureMarker(opts Options) string { return glyph(opts, "×", "x") }

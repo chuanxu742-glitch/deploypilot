@@ -7,32 +7,21 @@ package server
 
 import (
 	"fmt"
-	"io"
-	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/deploypilot/deploypilot/internal/llm"
 )
 
 func TestAgentLiveDeploy(t *testing.T) {
-	if os.Getenv("DP_AGENT_LIVE") != "1" || os.Getenv("BAILU_API_KEY") == "" {
-		t.Skip("set DP_AGENT_LIVE=1 and BAILU_API_KEY to run a real-model deployment on this machine")
-	}
+	requireLive(t)
 	if _, err := exec.LookPath("python"); err != nil && runtime.GOOS == "windows" {
 		t.Skip("python not found")
 	}
-	model := llm.FromEnv()
-	t.Chdir(t.TempDir()) // the terminal starts here; keep relative writes out of the repo
-	srv, cookie := newLLMServer(t)
-	srv.llm = model
-	srv.agentMaxSteps = 20
-	h := &deepHarness{t: t, srv: srv, model: &scriptedModel{}, conn: agentSocket(t, srv, cookie), cookie: cookie, work: t.TempDir()}
+	h := newLiveServer(t, 20)
+	h.work = t.TempDir()
 	port := freePort(t)
 	t.Cleanup(func() { stopListener(t, port) })
 	marker := fmt.Sprintf("deploypilot-live-%d", time.Now().UnixNano())
@@ -61,15 +50,12 @@ func TestAgentLiveDeploy(t *testing.T) {
 	t.Logf("final success=%v state=%v:\n%s", final["success"], final["state"], final["text"])
 
 	// Independent check: the service answers with the marker.
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	code, body, err := httpGet(fmt.Sprintf("http://127.0.0.1:%d/", port), 5*time.Second)
 	if err != nil {
 		t.Fatalf("service is not reachable after the agent finished: %v", err)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(body), marker) {
-		t.Fatalf("service answered %d %q, want the marker", resp.StatusCode, truncateUTF8(string(body), 200))
+	if !strings.Contains(body, marker) {
+		t.Fatalf("service answered %d %q, want the marker", code, truncateUTF8(body, 200))
 	}
 	if final["success"] != true {
 		t.Errorf("the service works but the agent did not report verified success")
@@ -79,12 +65,8 @@ func TestAgentLiveDeploy(t *testing.T) {
 	}
 	// Nothing was written outside the work directory by file tools.
 	for _, e := range run.of("tool_call") {
-		if p, _ := e["path"].(string); p != "" {
-			abs := p
-			if !filepath.IsAbs(abs) {
-				continue
-			}
-			if rel, err := filepath.Rel(h.work, abs); err != nil || strings.HasPrefix(rel, "..") {
+		if p, _ := e["path"].(string); filepath.IsAbs(p) {
+			if rel, err := filepath.Rel(h.work, p); err != nil || strings.HasPrefix(rel, "..") {
 				t.Errorf("file tool touched %s outside the work directory", p)
 			}
 		}
