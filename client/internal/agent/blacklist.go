@@ -31,7 +31,19 @@ var dangerousPatterns = []*regexp.Regexp{
 	// Recursive permission/ownership changes on the root directory.
 	regexp.MustCompile(`\bchmod\b[^\n]*\s-R[^\n]*\s7{3}\s+/(\s|$)`),
 	regexp.MustCompile(`\bchown\b[^\n]*\s-R[^\n]*\s+/(\s|$)`),
+	// Deleting everything under / with find, and the kernel's instant reboot,
+	// crash or power-off triggers.
+	regexp.MustCompile(`\bfind\s+/(\s|\*\s)[^\n]*-delete\b`),
+	regexp.MustCompile(`>\s*/proc/sysrq-trigger\b`),
 }
+
+// nestedShell captures the script given to another shell, such as
+// bash -c "reboot" or powershell -Command "Stop-Computer". Quoted text is
+// otherwise ignored by the power rules, so the payload is checked on its own.
+var nestedShell = regexp.MustCompile(`(?i)\b(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?\b[^\n"']*?\s(?:-c|/c|/k|-command|-encodedcommand)\s+("(?:[^"\\]|\\.)*"|'[^']*')`)
+
+// startShutdown catches power control launched through Start-Process.
+var startShutdown = regexp.MustCompile(`(?i)\bStart-Process\b[^\n]*?\s(?:-FilePath\s+)?["']?(?:shutdown|Stop-Computer|Restart-Computer)(?:\.exe)?["']?(\s|$)`)
 
 // cmdStart matches a position where a new shell command can begin: the start
 // of input, after a separator (; & | newline ( or backtick), or after a
@@ -53,9 +65,11 @@ var powerPatterns = []*regexp.Regexp{
 // Windows recursive deletion of a drive root or the Windows directory needs
 // three independent conditions, which RE2 cannot express in one pattern.
 var (
-	winDeleteVerb  = regexp.MustCompile(`(?i)(^|[\s;&|(])(Remove-Item|ri|rm|del|erase|rd|rmdir)\s`)
-	winRecursive   = regexp.MustCompile(`(?i)(\s-r(ecurse)?\b|\s/s\b)`)
-	winRootTargets = regexp.MustCompile(`(?i)(^|\s)["']?([a-z]:\\?|[a-z]:\\windows\\?|\$env:(systemroot|systemdrive|windir)\\?)["']?(\s|$|;)`)
+	winDeleteVerb = regexp.MustCompile(`(?i)(^|[\s;&|(])(Remove-Item|ri|rm|del|erase|rd|rmdir)\s`)
+	winRecursive  = regexp.MustCompile(`(?i)(\s-r(ecurse)?\b|\s/s\b)`)
+	// A drive root (C:, C:\, C:/, C:\*), the Windows directory, or the
+	// profile directory as a whole.
+	winRootTargets = regexp.MustCompile(`(?i)(^|\s)["']?([a-z]:[\\/]?\*?|[a-z]:[\\/]windows[\\/]?\*?|\$env:(systemroot|systemdrive|windir|userprofile)[\\/]?\*?|~[\\/]?\*?)["']?(\s|$|;)`)
 )
 
 func windowsRootWipe(c string) bool {
@@ -73,8 +87,53 @@ func stripQuoted(s string) string {
 	return quotedRe.ReplaceAllString(s, `""`)
 }
 
-// CheckCommand returns a non-empty reason when command is blocked.
+// PowerShell's $PID is a read-only automatic variable holding the shell's own
+// process ID. Bash habits like `$pid = (...).OwningProcess; Stop-Process -Id
+// $pid` fail to assign (a non-terminating error) and then stop the shared
+// terminal itself. A live test run produced exactly that command.
+var (
+	psAssignPID = regexp.MustCompile(`(?i)(^|[^\w$])\$pid\s*=[^=]|\bforeach\s*\(\s*\$pid\s+in\b`)
+	psStopSelf  = regexp.MustCompile(`(?i)\b(Stop-Process|spps|kill|taskkill)\b[^\n;|]*\$pid\b`)
+)
+
+// CheckPowerShell reports PowerShell-specific mistakes that would harm the
+// shared terminal, with a fix the model can apply. Run it for Windows only.
+func CheckPowerShell(command string) (blocked bool, reason string) {
+	c := stripQuoted(command)
+	if psAssignPID.MatchString(c) {
+		return true, "$PID is PowerShell's read-only automatic variable (the terminal's own process ID); assigning to it fails, and stopping $pid would kill the shared terminal. Use another name such as $procId"
+	}
+	if psStopSelf.MatchString(c) {
+		return true, "$PID is the shared terminal's own process ID; stopping it would end the terminal. Stop the target process by its own ID instead"
+	}
+	return false, ""
+}
+
+// CheckCommand returns a non-empty reason when command is blocked. Scripts
+// passed to another shell (bash -c "…", powershell -Command "…") are checked
+// too, up to three levels deep.
 func CheckCommand(command string) (blocked bool, reason string) {
+	pending := []string{command}
+	for depth := 0; depth < 3 && len(pending) > 0; depth++ {
+		var next []string
+		for _, c := range pending {
+			if blocked, reason := checkFlat(c); blocked {
+				if depth > 0 {
+					reason += " (inside a nested shell command)"
+				}
+				return true, reason
+			}
+			for _, m := range nestedShell.FindAllStringSubmatch(c, -1) {
+				next = append(next, m[1][1:len(m[1])-1])
+			}
+		}
+		pending = next
+	}
+	return false, ""
+}
+
+// checkFlat applies the rules to one command without looking into nested shells.
+func checkFlat(command string) (bool, string) {
 	c := strings.TrimSpace(command)
 	for _, candidate := range []string{c, unquote(c)} {
 		for _, re := range dangerousPatterns {
@@ -91,6 +150,9 @@ func CheckCommand(command string) (blocked bool, reason string) {
 		if m := re.FindString(unquoted); m != "" {
 			return true, "power-control commands (shutdown/reboot/poweroff/halt) are not allowed: " + strings.TrimSpace(m)
 		}
+	}
+	if m := startShutdown.FindString(c); m != "" {
+		return true, "power-control commands (shutdown/reboot/poweroff/halt) are not allowed: " + strings.TrimSpace(m)
 	}
 	return false, ""
 }

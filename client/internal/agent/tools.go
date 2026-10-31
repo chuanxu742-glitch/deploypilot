@@ -14,6 +14,7 @@ const (
 	toolWriteFile  = "write_file"
 	toolEditFile   = "edit_file"
 	toolAppendFile = "append_file"
+	toolWaitFor    = "wait_for"
 	toolFinish     = "finish"
 )
 
@@ -30,7 +31,7 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolRunCommand,
-				Description: "Run a shell command using " + shell + " in the operator's persistent terminal (cd and exported variables persist between calls). Returns exit code and combined stdout/stderr (long output keeps its head and tail). Commands cannot receive keyboard input: use non-interactive flags, and start long-running services in the background with logs instead of in the foreground. Commands run sequentially.",
+				Description: "Run a shell command using " + shell + " in the operator's persistent terminal (cd and exported variables persist between calls and between tasks, so the terminal may start in a directory left by earlier work; prefer absolute paths). Returns exit code, the terminal's working directory after the command (cwd), and combined stdout/stderr (long output keeps its head and tail); the returned call_id can be referenced as verification evidence. Commands cannot receive keyboard input: use non-interactive flags, and start long-running services in the background with logs instead of in the foreground. Commands run sequentially.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
@@ -61,7 +62,7 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolWriteFile,
-				Description: "Create a new file or overwrite an existing one with the given content (creates parent directories). Use for new scripts/configs/compose files. To change part of an existing file, prefer edit_file.",
+				Description: "Create a new file or overwrite an existing one with the given content (creates parent directories); an automatic .bak-* backup is made when overwriting an existing file. Use for new scripts/configs/compose files. To change part of an existing file, prefer edit_file.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
@@ -76,7 +77,7 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolEditFile,
-				Description: "Edit an existing text file in place by replacing old_string with new_string. By default old_string must match exactly once (include enough surrounding context to be unique); set replace_all to replace every occurrence. Does not load the whole file into the reply, so it works on files larger than read_file's limit.",
+				Description: "Edit an existing text file in place by replacing old_string with new_string; an automatic .bak-* backup is made before editing. By default old_string must match exactly once (include enough surrounding context to be unique); set replace_all to replace every occurrence. Does not load the whole file into the reply, so it works on files larger than read_file's limit.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
@@ -107,13 +108,33 @@ func toolSet() []llm.Tool {
 		{
 			Type: "function",
 			Function: llm.FunctionDefinition{
+				Name:        toolWaitFor,
+				Description: "Wait until a URL returns 2xx/3xx, a log contains text, or a process exits. Returns the observed condition for verification.",
+				Parameters: raw(`{
+					"type":"object",
+					"properties":{
+						"kind":{"type":"string","enum":["url","log","process"]},
+						"target":{"type":"string","description":"HTTP(S) URL, log file path, or positive process ID, depending on kind."},
+						"contains":{"type":"string","description":"Required text to find when kind is log."},
+						"timeout_seconds":{"type":"integer","minimum":0,"maximum":3600,"description":"Wait limit. 0 or omitted means 300 seconds."},
+						"interval_seconds":{"type":"integer","minimum":1,"maximum":60,"description":"Polling interval. Omitted means 2 seconds; provided values must be 1..60."}
+					},
+					"required":["kind","target"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.FunctionDefinition{
 				Name:        toolFinish,
-				Description: "Call when the task is complete (or cannot proceed) to end the session with a summary for the operator.",
+				Description: "For an already started task, call finish to report explicitly verified deployment success or a real failure. After reading files or checking the environment, you may explain results in a normal natural-language reply without finish. If an operator answer is required, use outcome=needs_input with success=false and ask a concrete question in summary. On success, cite real successful run_command or wait_for call IDs in verification_call_ids. Only the most recent run_command (and wait_for calls after it) count: every new command or file change invalidates earlier IDs, so run all final checks together in one run_command immediately before finish and cite that call_id.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
 						"summary":{"type":"string","description":"What was accomplished, how to use/verify the result, and any follow-ups."},
-						"success":{"type":"boolean"}
+						"success":{"type":"boolean"},
+						"outcome":{"type":"string","enum":["completed","failed","needs_input"],"description":"Use completed with success=true for verified success; failed with success=false for a real failure; needs_input with success=false when an operator answer is required. For needs_input, verification_call_ids must be empty or omitted."},
+						"verification_call_ids":{"type":"array","items":{"type":"string"},"description":"Successful run_command or wait_for call IDs supporting success=true."}
 					},
 					"required":["summary","success"]
 				}`),
@@ -152,7 +173,17 @@ type appendFileArgs struct {
 	Content string `json:"content"`
 }
 
+type waitForArgs struct {
+	Kind            string `json:"kind"`
+	Target          string `json:"target"`
+	Contains        string `json:"contains,omitempty"`
+	TimeoutSeconds  int    `json:"timeout_seconds,omitempty"`
+	IntervalSeconds int    `json:"interval_seconds,omitempty"`
+}
+
 type finishArgs struct {
-	Summary string `json:"summary"`
-	Success bool   `json:"success"`
+	Summary             string   `json:"summary"`
+	Success             bool     `json:"success"`
+	Outcome             string   `json:"outcome,omitempty"`
+	VerificationCallIDs []string `json:"verification_call_ids,omitempty"`
 }

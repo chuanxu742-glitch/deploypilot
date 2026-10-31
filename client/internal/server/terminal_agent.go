@@ -3,8 +3,6 @@ package server
 import (
 	"encoding/json"
 	"io"
-
-	"github.com/deploypilot/deploypilot/internal/agent"
 )
 
 // Terminal subscribers share agentMu with the task slot so a new connection
@@ -48,18 +46,6 @@ func (s *Server) broadcastTerminalLocked(message any) {
 			close(updates)
 		}
 	}
-}
-
-func (s *Server) publishTerminalAgent(event agent.Event) {
-	if event.Type == agent.EventThinking || event.Type == agent.EventStatus {
-		return
-	}
-	s.agentMu.Lock()
-	defer s.agentMu.Unlock()
-	s.broadcastTerminalLocked(struct {
-		Type  string      `json:"type"`
-		Event agent.Event `json:"event"`
-	}{"agent_event", event})
 }
 
 func (s *Server) markAgentStopping() {

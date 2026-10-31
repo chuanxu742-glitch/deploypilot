@@ -18,7 +18,8 @@ import {
   RefreshCw,
   Link,
   ArrowUpRight,
-  History,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 
 const icons = {
@@ -41,7 +42,8 @@ const icons = {
   refresh: RefreshCw,
   link: Link,
   diagonal: ArrowUpRight,
-  history: History,
+  sidebarClose: PanelLeftClose,
+  sidebarOpen: PanelLeftOpen,
 };
 export type IconName = keyof typeof icons;
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {

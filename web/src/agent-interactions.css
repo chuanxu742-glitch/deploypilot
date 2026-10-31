@@ -1,0 +1,49 @@
+.active-session-banner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: var(--line) solid var(--gray-6);
+  color: var(--gray-11);
+  font-size: 14px;
+}
+
+.steer-status-list {
+  max-height: 160px;
+  overflow: auto;
+}
+
+.steer-status {
+  margin: 8px 4px 0;
+  color: var(--gray-11);
+  font-size: 14px;
+}
+
+.steer-status pre {
+  max-height: 96px;
+  overflow: auto;
+  margin: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.steer-message-content summary {
+  cursor: pointer;
+}
+
+@media (max-height: 650px) {
+  .agent-panel .composer textarea {
+    max-height: clamp(44px, 14vh, 72px);
+  }
+
+  .agent-panel .composer-context {
+    max-height: 60px;
+    overflow-y: auto;
+  }
+
+  .steer-status-list {
+    max-height: clamp(36px, 12vh, 64px);
+  }
+}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/deploypilot/deploypilot/internal/agent"
 	"os"
@@ -13,11 +14,13 @@ import (
 func (s *Server) sharedTerminal() (*sharedShell, error) {
 	s.shellMu.Lock()
 	defer s.shellMu.Unlock()
+	replacing := false
 	if s.shell != nil {
 		select {
 		case <-s.shell.dead:
 			_ = s.shell.Close()
 			s.shell = nil
+			replacing = true
 		default:
 			return s.shell, nil
 		}
@@ -34,6 +37,9 @@ func (s *Server) sharedTerminal() (*sharedShell, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The next agent command reports the restart once, so the model knows
+	// variables and other state from the old shell are gone.
+	shell.restarted.Store(replacing)
 	s.shell = shell
 	return shell, nil
 }
@@ -56,12 +62,28 @@ func (e *sessionExecutor) Run(ctx context.Context, command string, timeout time.
 		return -1, "", err
 	}
 	if timeout <= 0 {
-		timeout = 10 * time.Minute
+		timeout = agent.DefaultCommandTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return shell.Run(ctx, command, output)
+	code, out, err := shell.Run(ctx, command, output)
+	if errors.Is(err, errShellEndedBeforeStart) {
+		// A command right after `exit` can reach the old shell in the few
+		// milliseconds before its exit is noticed. Nothing ran; use a new one.
+		if shell, err = e.server.sharedTerminal(); err != nil {
+			return -1, "", err
+		}
+		code, out, err = shell.Run(ctx, command, output)
+	}
+	if shell.restarted.CompareAndSwap(true, false) {
+		out = shellRestartNote + "\n" + out
+	}
+	return code, out, err
 }
+
+// shellRestartNote prefixes the first result from a replacement terminal.
+const shellRestartNote = "[note: the previous terminal shell exited (for example after `exit`) and a new one was started in the last working directory; variables, functions and other session state from before are gone]"
+
 func (e *sessionExecutor) path(path string) string {
 	if filepath.IsAbs(path) {
 		return path

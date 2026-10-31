@@ -54,9 +54,15 @@ type taskRecord struct {
 	EndedAt   int64  `json:"endedAt,omitempty"`
 	Phase     string `json:"phase"`
 	// RequestID is the latest start request accepted for this task.
-	RequestID string        `json:"requestId,omitempty"`
-	Events    []agent.Event `json:"events"`
-	NextID    int64         `json:"nextId"`
+	RequestID         string                  `json:"requestId,omitempty"`
+	Events            []agent.Event           `json:"events"`
+	NextID            int64                   `json:"nextId"`
+	CanContinue       bool                    `json:"canContinue"`
+	ConversationSaved bool                    `json:"conversationSaved,omitempty"`
+	PendingSteers     []agent.Instruction     `json:"pendingSteers,omitempty"`
+	PendingFollowUps  []agent.Instruction     `json:"pendingFollowUps,omitempty"`
+	SteerReceipts     map[string]string       `json:"steerReceipts,omitempty"`
+	StartReceipts     map[string]startReceipt `json:"startReceipts,omitempty"`
 }
 
 func (s *Server) loadTasks() {
@@ -77,6 +83,9 @@ func (s *Server) loadTasks() {
 	if errors.Is(err, os.ErrNotExist) {
 		if s.legacyAuditDir != "" {
 			s.importLegacyHistory(s.legacyAuditDir)
+		}
+		for _, task := range s.tasks {
+			task.CanContinue = s.canContinueTaskLocked(task)
 		}
 		s.persistTasksLocked()
 		return
@@ -102,6 +111,7 @@ func (s *Server) loadTasks() {
 			task.Phase = "interrupted"
 			task.EndedAt = time.Now().UnixMilli()
 		}
+		task.CanContinue = s.canContinueTaskLocked(task)
 	}
 	s.persistTasksLocked()
 }
@@ -150,19 +160,26 @@ func (s *Server) summariesLocked() []taskRecord {
 	}
 	return result
 }
+
+// runStateLocked is the phase of the running task, or "idle".
+func (s *Server) runStateLocked() string {
+	if s.taskCancel != nil && len(s.tasks) > 0 {
+		return s.tasks[0].Phase
+	}
+	return "idle"
+}
+
 func (s *Server) snapshotLocked() any {
-	state := "idle"
+	state := s.runStateLocked()
 	var task *taskRecord
 	if len(s.tasks) > 0 {
 		task = s.tasks[0]
-		if s.taskCancel != nil {
-			state = task.Phase
-		}
 	}
 	snapshot := map[string]any{"type": "snapshot", "state": state, "task": task, "tasks": s.summariesLocked()}
-	// The only task whose in-memory conversation can be continued.
-	if s.taskCancel == nil && s.lastConversation != nil {
-		snapshot["continuable"] = s.lastConvTaskID
+	// Preserve the original single-ID hint for older browsers. New browsers use
+	// the per-record capability to continue any saved task.
+	if s.taskCancel == nil && task != nil && task.CanContinue {
+		snapshot["continuable"] = task.ID
 	}
 	return snapshot
 }
@@ -223,6 +240,9 @@ func (s *Server) appendEventLocked(task *taskRecord, event agent.Event) agent.Ev
 	task.NextID++
 	event.ID = task.NextID
 	event.TaskID = task.ID
+	if event.Timestamp == 0 {
+		event.Timestamp = time.Now().UnixMilli()
+	}
 	if len(event.Text) > maxStoredEventText {
 		event.Text = truncateUTF8(event.Text, maxStoredEventText)
 	}
@@ -232,8 +252,15 @@ func (s *Server) appendEventLocked(task *taskRecord, event agent.Event) agent.Ev
 	// fragments cannot crowd tool calls out of the bounded history. Live
 	// viewers still receive every delta below.
 	merged := false
+	if n := len(task.Events); n > 0 && event.Type == agent.EventActivity && event.State == "waiting" && event.CallID != "" {
+		last := &task.Events[n-1]
+		if last.Type == agent.EventActivity && last.State == "waiting" && last.CallID == event.CallID {
+			task.Events[n-1] = event
+			merged = true
+		}
+	}
 	if n := len(task.Events); n > 0 && (event.Type == agent.EventThinking || event.Type == agent.EventOutput) {
-		if last := &task.Events[n-1]; last.Type == event.Type && last.CallID == event.CallID {
+		if last := &task.Events[n-1]; !merged && last.Type == event.Type && last.CallID == event.CallID {
 			last.Text = keepTailUTF8(last.Text+event.Text, maxStoredEventText)
 			merged = true
 		}
@@ -241,17 +268,7 @@ func (s *Server) appendEventLocked(task *taskRecord, event agent.Event) agent.Ev
 	if !merged {
 		task.Events = append(task.Events, event)
 	}
-	if len(task.Events) > 512 {
-		task.Events = task.Events[len(task.Events)-512:]
-	}
-	bytes := 0
-	for i := len(task.Events) - 1; i >= 0; i-- {
-		bytes += len(task.Events[i].Text) + len(task.Events[i].Command) + len(task.Events[i].Path) + 256
-		if bytes > 512*1024 {
-			task.Events = task.Events[i+1:]
-			break
-		}
-	}
+	trimTaskEvents(task)
 	if s.historyTimer == nil {
 		s.historyTimer = time.AfterFunc(200*time.Millisecond, func() { s.taskMu.Lock(); defer s.taskMu.Unlock(); s.persistTasksLocked(); s.historyTimer = nil })
 	}
@@ -285,18 +302,47 @@ func (s *Server) reopenTaskLocked(id string) (*taskRecord, error) {
 func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
+	if !validStartRequestID(requestID) {
+		return "任务请求编号无效，请重新提交。"
+	}
+	if _, receipt, found := s.findStartReceiptLocked(requestID); found {
+		if !receipt.Legacy && (receipt.ContentHash != steerDigest(text) || receipt.ContinueFrom != continueFrom) {
+			return "该请求编号已用于不同内容或会话归属，不能重复使用。"
+		}
+		return "此请求已接受，不会重放，请核对历史。"
+	}
 	if s.taskCancel != nil {
 		return "已有任务在运行，请先停止。"
 	}
 	if strings.TrimSpace(text) == "" {
 		return "任务内容不能为空。"
 	}
+	if len(text) > maxTaskTextBytes {
+		return "任务内容不能超过64KiB。"
+	}
 	var resume *agent.Conversation
+	var summaryRecovery bool
 	if continueFrom != "" {
-		if s.lastConversation == nil || continueFrom != s.lastConvTaskID {
-			return "无法继续：只能继续最近结束的一个任务，且上下文只保存在内存中，程序重启后不保留。请新建任务。"
+		var err error
+		resume, summaryRecovery, err = s.resumeConversationLocked(continueFrom)
+		if err != nil {
+			return "无法继续：" + err.Error()
 		}
-		resume = s.lastConversation
+		for _, record := range s.tasks {
+			if record.ID == continueFrom {
+				if requestID != "" && startReceiptCount(record) >= maxStartReceipts {
+					return "当前会话的接受收据已达上限，不能再接受新的请求编号。"
+				}
+				bytes := len(text)
+				for _, pending := range record.PendingFollowUps {
+					bytes += len(pending.Text)
+				}
+				if len(record.PendingFollowUps) >= maxPendingFollowUps || bytes > maxPendingFollowUpBytes {
+					return "未交付的续聊内容超过保存上限，请缩短本次补充。"
+				}
+				break
+			}
+		}
 	}
 	if !s.llm.HasKey() {
 		return "尚未配置模型 API Key，请先在设置中填写。"
@@ -304,45 +350,60 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	if s.historyErr != nil {
 		return "历史记录不可写，请先检查本机存储：" + s.historyErr.Error()
 	}
+	releaseSession := func() {}
+	if s.auth != nil && owner != "" {
+		var ok bool
+		releaseSession, ok = s.auth.HoldSession(owner)
+		if !ok {
+			return "会话已失效，请重新配对。"
+		}
+	}
 	if !s.acquireAgent() {
+		releaseSession()
 		return "已有任务在运行或清理，请稍后重试。"
 	}
 	var task *taskRecord
+	var followUpID string
+	var initialInstructions []agent.Instruction
 	if resume != nil {
 		// A follow-up stays in the same session: same record, same history
 		// entry, with the operator's message added to its timeline.
 		var err error
 		if task, err = s.reopenTaskLocked(continueFrom); err != nil {
 			s.releaseAgent()
+			releaseSession()
 			return "无法继续：任务记录读取失败：" + err.Error()
 		}
-		s.appendEventLocked(task, agent.Event{Type: agent.EventUser, Text: text})
+		task.CanContinue = false
+		initialInstructions = pendingInputs(task)
+		if summaryRecovery {
+			s.appendEventLocked(task, agent.Event{Type: agent.EventStatus, Text: "历史摘要恢复，需要重新检查当前机器与部署结果；旧验证不能作为本轮证据。"})
+		}
+		followUpID = fmt.Sprintf("followup-%d", task.NextID+1)
+		event := s.appendEventLocked(task, agent.Event{Type: agent.EventUser, Text: text, RequestID: followUpID})
+		task.PendingFollowUps = append(task.PendingFollowUps, agent.Instruction{RequestID: followUpID, Text: text, Kind: "followup", Sequence: event.ID})
 	} else {
 		token := make([]byte, 16)
 		if _, err := rand.Read(token); err != nil {
 			s.releaseAgent()
+			releaseSession()
 			return err.Error()
 		}
 		task = &taskRecord{ID: hex.EncodeToString(token), Title: text, StartedAt: time.Now().UnixMilli(), Phase: "running", Events: []agent.Event{}}
 		s.tasks = append([]*taskRecord{task}, s.tasks...)
 	}
 	previousRequestID := task.RequestID
+	rememberStart(task, requestID, text, continueFrom)
 	if requestID != "" {
 		task.RequestID = requestID
 	}
 
 	ctx, cancel := context.WithCancel(s.baseCtx)
 	s.taskCancel = cancel
+	s.taskAcceptingSteers = true
 	if s.auth != nil && owner != "" {
 		go func() {
-			interval := s.auth.IdleTimeout() / 4
-			if interval > time.Second {
-				interval = time.Second
-			}
-			if interval <= 0 {
-				interval = time.Millisecond
-			}
-			ticker := time.NewTicker(interval)
+			ticker := time.NewTicker(s.sessionCheckInterval())
 			defer ticker.Stop()
 			for {
 				select {
@@ -360,11 +421,15 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	s.persistTasksLocked()
 	if s.historyErr != nil {
 		task.RequestID = previousRequestID
+		if requestID != "" {
+			delete(task.StartReceipts, requestID)
+		}
 		cancel()
 		s.taskCancel = nil
 		task.Phase = "interrupted"
 		task.EndedAt = time.Now().UnixMilli()
 		s.releaseAgent()
+		releaseSession()
 		return "任务未启动，历史记录保存失败：" + s.historyErr.Error()
 	}
 	s.broadcastTaskLocked(s.snapshotLocked())
@@ -372,21 +437,40 @@ func (s *Server) startTask(text, owner, continueFrom, requestID string) string {
 	s.taskWG.Add(1)
 	go func() {
 		defer s.taskWG.Done()
+		defer releaseSession()
 		auditor := s.newAuditor()
-		ag := agent.New(agent.Config{LLM: s.llm.Snapshot(), Executor: s.newExecutor(), Auditor: auditor, ContextBytes: s.agentContextBytes, MaxSteps: s.agentMaxSteps, Resume: resume, Emit: func(e agent.Event) { s.publishTerminalAgent(e); s.emitTask(task, e) }})
+		ag := agent.New(agent.Config{LLM: s.llm.Snapshot(), Executor: s.newExecutor(), Auditor: auditor, ContextBytes: s.agentContextBytes, MaxSteps: s.agentMaxSteps, Resume: resume, Emit: func(e agent.Event) { s.emitTask(task, e) },
+			ApplyPending: func(apply func([]agent.Instruction) *agent.Conversation) error {
+				return s.applySteers(ctx, task, apply)
+			},
+			TryFinalize:         func(e agent.Event) bool { return s.tryFinalizeTask(ctx, task, e) },
+			InitialInstructions: initialInstructions,
+			FollowUpID:          followUpID,
+		})
 		_ = ag.Run(ctx, text)
 		_ = auditor.Close()
 		s.taskMu.Lock()
 		defer s.taskMu.Unlock()
 		cancel()
 		s.taskCancel = nil
-		// Keep only this run's conversation; an earlier one can no longer be resumed.
+		s.taskAcceptingSteers = false
+		for _, pending := range task.PendingSteers {
+			s.broadcastTaskLocked(s.appendEventLocked(task, agent.Event{Type: agent.EventActivity, State: "steer_deferred", RequestID: pending.RequestID, Text: "补充尚未应用，手动继续此任务后处理。"}))
+		}
 		s.lastConversation, s.lastConvTaskID = ag.Conversation(), task.ID
+		if err := s.saveConversationLocked(task, ag.Conversation()); err != nil {
+			s.historyErr = err
+			s.broadcastTaskLocked(s.appendEventLocked(task, agent.Event{Type: agent.EventError, Text: "对话上下文保存失败：" + err.Error()}))
+		}
+		if s.historyErr == nil {
+			reconcileCheckpoint(s, task, ag.Conversation())
+		}
 		task.Phase = "finished"
 		if s.baseCtx.Err() != nil {
 			task.Phase = "interrupted"
 		}
 		task.EndedAt = time.Now().UnixMilli()
+		task.CanContinue = s.historyErr == nil && s.canContinueTaskLocked(task)
 		s.releaseAgent()
 		s.persistTasksLocked()
 		s.broadcastTaskLocked(s.snapshotLocked())
@@ -400,6 +484,7 @@ func (s *Server) stopTask() {
 	state := "idle"
 	var task *taskRecord
 	if s.taskCancel != nil {
+		s.taskAcceptingSteers = false
 		s.taskCancel()
 		s.markAgentStopping()
 		if len(s.tasks) > 0 {
@@ -436,6 +521,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if record != nil && err == nil {
+			record.CanContinue = s.canContinueTaskLocked(record)
 			payload, err = json.Marshal(record)
 		}
 		s.taskMu.Unlock()
@@ -455,19 +541,30 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) taskPath(id string) string { return filepath.Join(s.historyDir, "task-"+id+".json") }
 func (s *Server) readTaskLocked(task *taskRecord) (*taskRecord, error) {
+	if err := validateTaskRecord(task, task.ID, task.Title); err != nil {
+		return nil, err
+	}
 	if task.Events != nil {
 		return task, nil
 	}
 	if filepath.Base(task.ID) != task.ID || strings.ContainsAny(task.ID, "/\\") {
 		return nil, errors.New("invalid history task id")
 	}
-	data, err := os.ReadFile(s.taskPath(task.ID))
+	data, err := readBoundedPrivate(s.taskPath(task.ID), 4*1024*1024)
 	if err != nil {
 		return nil, err
 	}
 	var record taskRecord
 	if err = json.Unmarshal(data, &record); err != nil {
 		return nil, err
+	}
+	if err := validateTaskRecord(&record, task.ID, task.Title); err != nil {
+		return nil, err
+	}
+	if record.Phase == "running" || record.Phase == "stopping" {
+		if task.Phase == "interrupted" {
+			record.Phase, record.EndedAt = task.Phase, task.EndedAt
+		}
 	}
 	return &record, nil
 }

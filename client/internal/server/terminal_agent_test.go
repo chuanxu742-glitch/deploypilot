@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/deploypilot/deploypilot/internal/agent"
 	"github.com/gorilla/websocket"
 )
 
@@ -100,7 +99,7 @@ func terminalMessage(t *testing.T, updates <-chan []byte) map[string]any {
 	}
 }
 
-func TestTerminalWebSocketReceivesAgentExecution(t *testing.T) {
+func TestTerminalWebSocketReceivesAgentState(t *testing.T) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
 		t.Skip("PTY unavailable on this platform")
 	}
@@ -142,10 +141,6 @@ func TestTerminalWebSocketReceivesAgentExecution(t *testing.T) {
 	if got := read(); got["state"] != "running" {
 		t.Fatal(got)
 	}
-	srv.publishTerminalAgent(agent.Event{Type: agent.EventOutput, Text: "actual streamed output\n"})
-	if got := read(); got["event"].(map[string]any)["text"] != "actual streamed output\n" {
-		t.Fatal(got)
-	}
 	srv.markAgentStopping()
 	if got := read(); got["state"] != "stopping" {
 		t.Fatal(got)
@@ -156,7 +151,7 @@ func TestTerminalWebSocketReceivesAgentExecution(t *testing.T) {
 	}
 }
 
-func TestTerminalAgentStreamAndInputOwnership(t *testing.T) {
+func TestTerminalAgentStateAndInputOwnership(t *testing.T) {
 	srv := New(Options{})
 	updates, unsubscribe := srv.subscribeTerminalAgent()
 	defer unsubscribe()
@@ -174,26 +169,11 @@ func TestTerminalAgentStreamAndInputOwnership(t *testing.T) {
 		t.Fatal(got)
 	}
 	_, _ = srv.writeTerminalInput(&shell, []byte("must not execute"))
-	srv.publishTerminalAgent(agent.Event{Type: agent.EventToolCall, Tool: "run_command", Command: "echo hello", CallID: "c1"})
-	srv.publishTerminalAgent(agent.Event{Type: agent.EventOutput, Text: "hello\n", CallID: "c1"})
-	srv.publishTerminalAgent(agent.Event{Type: agent.EventToolDone, Tool: "run_command", ExitCode: 0, CallID: "c1"})
-	for _, kind := range []string{"tool_call", "output", "tool_done"} {
-		message := terminalMessage(t, updates)
-		event := message["event"].(map[string]any)
-		if message["type"] != "agent_event" || event["type"] != kind || event["callId"] != "c1" {
-			t.Fatal(message)
-		}
-		if kind == "tool_done" && event["exitCode"] != float64(0) {
-			t.Fatal("zero exit code missing")
-		}
-	}
 	srv.markAgentStopping()
 	if got := terminalMessage(t, updates); got["state"] != "stopping" {
 		t.Fatal(got)
 	}
 	_, _ = srv.writeTerminalInput(&shell, []byte("cleanup must stay locked"))
-	srv.publishTerminalAgent(agent.Event{Type: agent.EventFinal, Text: "done"})
-	terminalMessage(t, updates)
 	_, _ = srv.writeTerminalInput(&shell, []byte("final is not cleanup"))
 	srv.releaseAgent()
 	if got := terminalMessage(t, updates); got["state"] != "idle" {
@@ -219,24 +199,4 @@ func TestTerminalJoiningDuringCleanupStaysReadOnly(t *testing.T) {
 		t.Fatal("subscription not closed")
 	}
 	srv.releaseAgent()
-}
-
-func TestSlowTerminalSubscriberCannotBlockAgent(t *testing.T) {
-	srv := New(Options{})
-	updates, unsubscribe := srv.subscribeTerminalAgent()
-	defer unsubscribe()
-	for i := 0; i < 300; i++ {
-		srv.publishTerminalAgent(agent.Event{Type: agent.EventOutput, Text: "output"})
-	}
-	for i := 0; i < 300; i++ {
-		select {
-		case _, ok := <-updates:
-			if !ok {
-				return
-			}
-		case <-time.After(time.Second):
-			t.Fatal("slow subscriber was not disconnected")
-		}
-	}
-	t.Fatal("unbounded terminal queue")
 }

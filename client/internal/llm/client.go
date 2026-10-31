@@ -25,11 +25,13 @@ const DefaultModel = "bailu-auto"
 
 // Client talks to an OpenAI-compatible chat API.
 type Client struct {
-	mu      sync.RWMutex
-	baseURL string
-	apiKey  string
-	model   string
-	http    *http.Client
+	mu                sync.RWMutex
+	baseURL           string
+	apiKey            string
+	model             string
+	http              *http.Client
+	streamIdleTimeout time.Duration
+	onRetryWait       func(attempt int, delay time.Duration)
 }
 
 // Config configures a Client.
@@ -39,7 +41,15 @@ type Config struct {
 	Model   string
 	// HTTPClient is optional; a sensible default is used when nil.
 	HTTPClient *http.Client
+	// StreamIdleTimeout limits the time without response-body data. Zero uses
+	// the 180-second default; this is not a total stream duration limit.
+	StreamIdleTimeout time.Duration
+	// OnRetryWait is called before each retry delay with the failed attempt
+	// number and effective wait (including Retry-After when longer).
+	OnRetryWait func(attempt int, delay time.Duration)
 }
+
+const defaultStreamIdleTimeout = 180 * time.Second
 
 // New creates a Client. BaseURL defaults to DefaultBaseURL.
 func New(cfg Config) *Client {
@@ -50,8 +60,8 @@ func New(cfg Config) *Client {
 	hc := cfg.HTTPClient
 	if hc == nil {
 		// No overall timeout: a long streaming completion must not be cut off
-		// mid-response. Bound only the time to the first response header, and
-		// inherit proxy settings from the environment via the default transport.
+		// mid-response. The transport bounds the first response header; doStream
+		// separately bounds response-body idle time. Inherit proxy settings.
 		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.ResponseHeaderTimeout = 60 * time.Second
 		hc = &http.Client{Transport: tr}
@@ -65,6 +75,13 @@ func New(cfg Config) *Client {
 		apiKey:  strings.TrimSpace(cfg.APIKey),
 		model:   model,
 		http:    hc,
+		streamIdleTimeout: func() time.Duration {
+			if cfg.StreamIdleTimeout <= 0 {
+				return defaultStreamIdleTimeout
+			}
+			return cfg.StreamIdleTimeout
+		}(),
+		onRetryWait: cfg.OnRetryWait,
 	}
 }
 
@@ -111,7 +128,7 @@ func (c *Client) HasKey() bool {
 func (c *Client) Snapshot() *Client {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return &Client{baseURL: c.baseURL, apiKey: c.apiKey, model: c.model, http: c.http}
+	return &Client{baseURL: c.baseURL, apiKey: c.apiKey, model: c.model, http: c.http, streamIdleTimeout: c.streamIdleTimeout, onRetryWait: c.onRetryWait}
 }
 
 // Redact removes the API key from a string so it is never leaked in logs.
@@ -180,8 +197,10 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, onDelta func(s
 }
 
 func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(string)) (result *ChatResult, err error) {
-	// Once a stream has begun, retrying would replay already displayed text.
-	// Tools only run after the entire response has passed validation.
+	// Most stream errors are not retried once content has reached the UI.
+	// Structured transient provider errors may retry the same model request;
+	// a failed attempt's assembler is discarded, and tools only run after the
+	// entire response has passed validation. Previously streamed text can repeat.
 	started := false
 	defer func() {
 		if err != nil && started {
@@ -192,7 +211,9 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -208,16 +229,21 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	if resp.StatusCode != http.StatusOK {
 		return nil, c.statusError(resp)
 	}
+	idleBody := newIdleTimeoutBody(resp.Body, c.streamIdleTimeout, cancelStream)
+	defer idleBody.Close()
 
 	asm := newAssembler()
-	totalBytes := 0
+	rawBytes, payloadBytes := 0, 0
 	sawDone := false
-	sc := bufio.NewScanner(resp.Body)
+	sc := bufio.NewScanner(idleBody)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
-		totalBytes += len(sc.Bytes())
-		if totalBytes > 2*1024*1024 {
-			return nil, &streamError{err: errors.New("model response exceeds 2 MiB limit")}
+		// Providers wrap every few characters in a ~250-byte JSON envelope, so
+		// the text limit applies to what the model produced; the raw limit
+		// only stops a stream that never ends.
+		rawBytes += len(sc.Bytes())
+		if rawBytes > maxStreamRawBytes {
+			return nil, &streamError{err: errResponseTooLarge}
 		}
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
@@ -234,12 +260,18 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 			return nil, fmt.Errorf("invalid model stream event: %w", err)
 		}
 		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			if code, ok := transientStreamErrorCode(chunk.Error); ok {
+				return nil, &upstreamBusyError{code: code}
+			}
 			return nil, fmt.Errorf("model stream error: %s", c.Redact(string(chunk.Error)))
 		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
 		ch := chunk.Choices[0]
+		if payloadBytes += ch.Delta.payloadBytes(); payloadBytes > maxStreamPayloadBytes {
+			return nil, &streamError{err: errResponseTooLarge}
+		}
 		if ch.Delta.Content != "" && onDelta != nil {
 			onDelta(ch.Delta.Content)
 		}
@@ -249,6 +281,9 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 		if ch.FinishReason != "" {
 			asm.finishReason = ch.FinishReason
 		}
+	}
+	if idleBody.TimedOut() {
+		return nil, fmt.Errorf("%w: no response data for %s", ErrStreamInterrupted, c.streamIdleTimeout)
 	}
 	if err := sc.Err(); err != nil {
 		if ctx.Err() != nil {
@@ -268,10 +303,53 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	return result, nil
 }
 
+const (
+	// maxStreamPayloadBytes bounds the text, reasoning and tool arguments of
+	// one model response.
+	maxStreamPayloadBytes = 2 * 1024 * 1024
+	// maxStreamRawBytes bounds the SSE bytes of one response, envelopes included.
+	maxStreamRawBytes = 32 * 1024 * 1024
+)
+
+var errResponseTooLarge = errors.New("模型单次回复超过 2 MiB 上限，已停止接收，其中的工具调用没有执行。请缩小任务范围后继续")
+
 // ErrStreamInterrupted marks a response whose connection dropped before the
 // model finished. No tools from it were executed, so the caller may safely
 // request the same turn again; already-streamed text may then appear twice.
 var ErrStreamInterrupted = errors.New("model stream interrupted")
+
+const upstreamBusyCode = "upstream_busy"
+
+// Providers may encode an HTTP-style stream error code as an integer or a
+// string. Only explicit transient codes bypass the ordinary stream-error guard;
+// message text and provider metadata cannot make authentication errors retryable.
+func transientStreamErrorCode(payload json.RawMessage) (string, bool) {
+	var providerErr struct {
+		Code json.RawMessage `json:"code"`
+	}
+	if json.Unmarshal(payload, &providerErr) != nil {
+		return "", false
+	}
+	var code string
+	if json.Unmarshal(providerErr.Code, &code) != nil {
+		var status int
+		if json.Unmarshal(providerErr.Code, &status) != nil {
+			return "", false
+		}
+		code = strconv.Itoa(status)
+	}
+	if code == upstreamBusyCode {
+		return code, true
+	}
+	status, err := strconv.Atoi(code)
+	return code, err == nil && (status == http.StatusTooManyRequests || (status >= 500 && status <= 599))
+}
+
+type upstreamBusyError struct{ code string }
+
+func (e *upstreamBusyError) Error() string {
+	return fmt.Sprintf("模型服务持续繁忙，请稍后继续当前任务或更换模型（code: %s）", e.code)
+}
 
 // IsStreamInterrupted reports whether err is a transport interruption.
 func IsStreamInterrupted(err error) bool { return errors.Is(err, ErrStreamInterrupted) }
@@ -296,9 +374,9 @@ func IsContextOverflow(err error) bool {
 	return false
 }
 
-// streamError is not retried inside StreamChat: once text has streamed, an
-// automatic replay would duplicate it. Interrupted streams are additionally
-// marked with ErrStreamInterrupted so the agent loop can decide to retry.
+// streamError prevents replaying partial replies for ordinary stream failures.
+// Explicit transient provider codes are checked before this wrapper by
+// retryable; its incomplete assembled result is discarded before retry.
 type streamError struct{ err error }
 
 func (e *streamError) Error() string { return e.err.Error() }
@@ -338,8 +416,15 @@ func (e *apiError) Error() string {
 
 // retryable reports whether an error warrants a retry.
 func retryable(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var be *upstreamBusyError
+	if errors.As(err, &be) {
+		return true
+	}
 	var se *streamError
-	if errors.As(err, &se) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.As(err, &se) || errors.Is(err, ErrStreamInterrupted) {
 		return false
 	}
 	var ae *apiError
@@ -351,22 +436,40 @@ func retryable(err error) bool {
 }
 
 // retryBaseDelay is the first backoff step; a variable so tests can shorten it.
-var retryBaseDelay = 500 * time.Millisecond
+var retryBaseDelay = 2 * time.Second
 
 // maxRetryAfter caps a provider-requested wait so a bad header cannot stall a
 // task indefinitely.
 const maxRetryAfter = 60 * time.Second
 
-// withRetry retries requests that failed before a response stream began.
-// Backoff is 0.5s, 1s, 2s, 4s, 8s (about 15s in total), or the provider's
-// Retry-After when it asks for longer, so a short rate limit can clear.
+type retryWaitContextKey struct{}
+
+// WithRetryWait returns a context whose callback observes each internal API
+// retry delay. A callback attached to the request context takes precedence
+// over the Client's Config.OnRetryWait callback.
+func WithRetryWait(ctx context.Context, callback func(attempt int, delay time.Duration)) context.Context {
+	return context.WithValue(ctx, retryWaitContextKey{}, callback)
+}
+
+// withRetry retries pre-stream failures and structured transient stream errors.
+// Delays grow exponentially from 2s to 60s (about three minutes at the limit),
+// or use the provider's Retry-After when it asks for longer.
 func (c *Client) withRetry(ctx context.Context, fn func() error) error {
-	const maxAttempts = 6
+	const maxAttempts = 8
 	delay := retryBaseDelay
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		err = fn()
-		if err == nil || !retryable(err) || attempt == maxAttempts {
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !retryable(err) || attempt == maxAttempts {
 			return err
 		}
 		wait := delay
@@ -374,12 +477,21 @@ func (c *Client) withRetry(ctx context.Context, fn func() error) error {
 		if errors.As(err, &ae) && ae.retryAfter > wait {
 			wait = min(ae.retryAfter, maxRetryAfter)
 		}
+		onWait := c.onRetryWait
+		if callback, ok := ctx.Value(retryWaitContextKey{}).(func(int, time.Duration)); ok && callback != nil {
+			onWait = callback
+		}
+		if onWait != nil {
+			onWait(attempt, wait)
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(wait):
+		case <-timer.C:
 		}
-		delay *= 2
+		delay = min(delay*2, maxRetryAfter)
 	}
 	return err
 }

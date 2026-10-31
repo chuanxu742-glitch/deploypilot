@@ -11,7 +11,7 @@ import (
 
 // DefaultContextBytes bounds the JSON request, not the provider's token count.
 // A smaller model may need a lower configured limit plus room for its reply.
-const DefaultContextBytes = 128 * 1024
+const DefaultContextBytes = 256 * 1024
 
 type historyEntry struct {
 	Tool          string `json:"tool,omitempty"`

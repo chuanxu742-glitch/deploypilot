@@ -17,9 +17,20 @@ type streamChunk struct {
 
 // deltaMsg is the incremental delta within a stream chunk.
 type deltaMsg struct {
-	Role      string          `json:"role"`
-	Content   string          `json:"content"`
-	ToolCalls []toolCallDelta `json:"tool_calls"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// Reasoning text is not kept, only counted toward the response size.
+	ReasoningContent string          `json:"reasoning_content"`
+	ToolCalls        []toolCallDelta `json:"tool_calls"`
+}
+
+// payloadBytes is the model-produced text in one delta.
+func (d deltaMsg) payloadBytes() int {
+	n := len(d.Content) + len(d.ReasoningContent)
+	for _, tc := range d.ToolCalls {
+		n += len(tc.Function.Name) + len(tc.Function.Arguments)
+	}
+	return n
 }
 
 // toolCallDelta is a streamed fragment of a tool call. Fields arrive across

@@ -5,6 +5,19 @@
 // transient drop and return to the pairing gate instead of retrying forever.
 export const SESSION_EXPIRED_CODE = 4401;
 
+// WebSocket reconnect timing shared by the task and terminal sockets.
+export const RECONNECT_INITIAL_MS = 300;
+const RECONNECT_MAX_MS = 5_000;
+/** A socket that has not opened by now is closed and retried. */
+export const SOCKET_OPEN_TIMEOUT_MS = 12_000;
+export const nextReconnectDelay = (delay: number) =>
+  Math.min(RECONNECT_MAX_MS, delay * 2);
+
+/** A unique ID for one submission, so a retry is never applied twice. */
+export const createRequestId = () =>
+  globalThis.crypto?.randomUUID?.() ??
+  `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
 let sessionExpiredHandler: (() => void) | null = null;
 /** Registers (or clears, with null) the handler run when the session expires. */
 export function onSessionExpired(handler: (() => void) | null): void {
@@ -24,14 +37,19 @@ async function authenticatedFetch(
   return response;
 }
 
+/** An authenticated request whose successful response is JSON. */
+async function fetchJSON<T>(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await authenticatedFetch(input, init);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 export function wsURL(path: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}${path}`;
-}
-
-export interface Health {
-  status: string;
-  version: string;
 }
 
 export interface MachineInfo {
@@ -49,43 +67,36 @@ export interface TaskSummary {
   endedAt?: number;
   phase: "running" | "stopping" | "finished" | "interrupted";
   requestId?: string;
+  /** Whether this server can restore the conversation behind this record. */
+  canContinue?: boolean;
 }
 
 export interface TaskRecord extends TaskSummary {
   events: import("./agent-state").AgentEvent[];
 }
 
+/** Whether the server is running a task, regardless of which one is shown. */
+export type RunState = "idle" | "running" | "stopping";
+
 export interface AgentSnapshot {
   type: "snapshot";
-  state: "idle" | "running" | "stopping";
+  state: RunState;
   task: TaskRecord | null;
   tasks: TaskSummary[];
-  /** The one finished session the server can continue (the latest run). */
+  /** Compatibility fallback for servers without per-record canContinue. */
   continuable?: string;
 }
 
-export async function listTasks(signal?: AbortSignal): Promise<TaskSummary[]> {
-  const response = await authenticatedFetch("/api/tasks", { signal });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+export function listTasks(signal?: AbortSignal): Promise<TaskSummary[]> {
+  return fetchJSON("/api/tasks", { signal });
 }
 
-export async function getTask(
-  id: string,
-  signal?: AbortSignal,
-): Promise<TaskRecord> {
-  const response = await authenticatedFetch(
-    `/api/tasks/${encodeURIComponent(id)}`,
-    { signal },
-  );
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+export function getTask(id: string, signal?: AbortSignal): Promise<TaskRecord> {
+  return fetchJSON(`/api/tasks/${encodeURIComponent(id)}`, { signal });
 }
 
-export async function machineInfo(): Promise<MachineInfo> {
-  const res = await authenticatedFetch("/api/machine");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+export function machineInfo(): Promise<MachineInfo> {
+  return fetchJSON("/api/machine");
 }
 
 /** Reads a one-time pairing token from the URL fragment (#t=...). */
@@ -104,23 +115,23 @@ function clearHash(): void {
   );
 }
 
-export async function pair(token: string): Promise<void> {
-  const res = await fetch("/api/pair", {
+async function pair(token: string): Promise<void> {
+  const response = await fetch("/api/pair", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token }),
   });
-  if (!res.ok) {
-    throw new Error(`pair failed: HTTP ${res.status}`);
+  if (!response.ok) {
+    throw new Error(`pair failed: HTTP ${response.status}`);
   }
 }
 
 /** Checks whether the current cookie is an authenticated session. */
 async function checkSession(): Promise<boolean> {
-  const res = await fetch("/api/session");
-  if (!res.ok && res.status !== 401)
-    throw new Error(`会话校验失败：HTTP ${res.status}`);
-  return res.ok;
+  const response = await fetch("/api/session");
+  if (!response.ok && response.status !== 401)
+    throw new Error(`会话校验失败：HTTP ${response.status}`);
+  return response.ok;
 }
 
 let disconnectSessionCheck: Promise<boolean> | null = null;
@@ -186,46 +197,36 @@ export function authenticate(): Promise<boolean> {
   return authentication;
 }
 
-export async function health(): Promise<Health> {
-  const res = await fetch("/api/health");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 export interface LLMStatus {
   hasKey: boolean;
   model: string;
 }
 
-export async function llmStatus(): Promise<LLMStatus> {
-  const res = await authenticatedFetch("/api/llm/status");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+export function llmStatus(): Promise<LLMStatus> {
+  return fetchJSON("/api/llm/status");
 }
 
-export async function setLLMConfig(
+export function setLLMConfig(
   cfg: {
     apiKey?: string;
     model?: string;
   },
   signal?: AbortSignal,
 ): Promise<LLMStatus> {
-  const res = await authenticatedFetch("/api/llm/config", {
+  return fetchJSON("/api/llm/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(cfg),
     signal,
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 
 export async function listModels(signal?: AbortSignal): Promise<string[]> {
-  const res = await authenticatedFetch("/api/llm/models", { signal });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${res.status}`);
+  const response = await authenticatedFetch("/api/llm/models", { signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${response.status}`);
   }
-  const body = await res.json();
+  const body = await response.json();
   return body.models ?? [];
 }

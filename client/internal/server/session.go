@@ -10,6 +10,7 @@ import (
 
 // guardSession closes an expired/revoked socket even when no input arrives.
 // Only actual input or task output calls touch; ping/pong traffic does not.
+// A running task separately holds its owner's session against idle expiry.
 // closeSessionExpired sends a distinct application close code before closing,
 // so the browser can tell an expired/revoked session apart from a transient
 // network drop and prompt the operator to pair again instead of retrying
@@ -21,6 +22,12 @@ func closeSessionExpired(conn *websocket.Conn) {
 	_ = conn.Close()
 }
 
+// sessionCheckInterval is how often a held or watched session is checked:
+// a quarter of the idle timeout, at most a second.
+func (s *Server) sessionCheckInterval() time.Duration {
+	return max(time.Millisecond, min(time.Second, s.auth.IdleTimeout()/4))
+}
+
 func (s *Server) guardSession(r *http.Request, conn *websocket.Conn) (touch func() bool, stop func()) {
 	cookie, err := r.Cookie(auth.CookieName)
 	if err != nil {
@@ -28,15 +35,8 @@ func (s *Server) guardSession(r *http.Request, conn *websocket.Conn) (touch func
 		return func() bool { return false }, func() {}
 	}
 	done := make(chan struct{})
-	interval := s.auth.IdleTimeout() / 4
-	if interval > time.Second {
-		interval = time.Second
-	}
-	if interval <= 0 {
-		interval = time.Millisecond
-	}
 	go func() {
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(s.sessionCheckInterval())
 		defer ticker.Stop()
 		for {
 			select {

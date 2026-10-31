@@ -63,7 +63,10 @@ func TestContinueResumesLastTaskConversation(t *testing.T) {
 		call := `{"command":"pip install vllm"}`
 		name := "run_command"
 		if n == 2 {
-			call, name = `{"summary":"vllm ready on 8001","success":true}`, "finish"
+			call = `{"command":"curl --fail http://localhost:8001/health"}`
+		}
+		if n == 3 {
+			call, name = `{"summary":"vllm ready on 8001","success":true,"verification_call_ids":["c2"]}`, "finish"
 		}
 		args, _ := json.Marshal(call)
 		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c%d\",\"type\":\"function\",\"function\":{\"name\":%q,\"arguments\":%s}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n", n, name, args)
@@ -86,6 +89,7 @@ func TestContinueResumesLastTaskConversation(t *testing.T) {
 		t.Fatalf("finished task not offered for continuation: %v", snapshot["continuable"])
 	}
 
+	srv.agentMaxSteps = 2
 	conn.WriteJSON(agentClientMsg{Type: "start", Task: "继续，用 8001 端口", ContinueFrom: firstID})
 	finals = readUntilIdle(t, conn)
 	if len(finals) != 1 || finals[0]["success"] != true {

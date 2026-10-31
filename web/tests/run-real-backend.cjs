@@ -7,9 +7,10 @@ const child = spawn(
     "test",
     "./internal/server",
     "-run",
-    "^TestFrontendBrowserIntegration$",
+    // Every *FrontendBrowserIntegration test; each bounds its own browser run.
+    "^Test\\w*FrontendBrowserIntegration$",
     "-count=1",
-    "-timeout=90s",
+    "-timeout=5m",
     "-v",
   ],
   {

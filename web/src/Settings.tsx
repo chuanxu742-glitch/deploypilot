@@ -163,7 +163,9 @@ export function Settings({
             )}
             <footer className="dialog-footer">
               {version && (
-                <span className="settings-version">DeployPilot {version}</span>
+                <span className="settings-version">
+                  BaiLu DeployPilot {version}
+                </span>
               )}
               <button
                 className="button primary"

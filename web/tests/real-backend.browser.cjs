@@ -58,7 +58,12 @@ const assert = require("node:assert/strict");
       async () => (await fetch("/api/tasks").then((r) => r.json()))[0],
     );
     await page.waitForFunction(
-      (id) => document.querySelector(".task-history-select")?.value === id,
+      (id) =>
+        Array.from(document.querySelectorAll(".session-item")).some(
+          (item) =>
+            item.dataset.taskId === id &&
+            item.getAttribute("aria-current") === "page",
+        ),
       first.id,
     );
     assert.ok(

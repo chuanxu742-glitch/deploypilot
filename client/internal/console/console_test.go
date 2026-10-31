@@ -14,7 +14,7 @@ func TestPrepareNonTerminalIsPlain(t *testing.T) {
 	defer f.Close()
 	caps, restore := Prepare(f)
 	defer restore()
-	if caps.Terminal || caps.Color || caps.Width != 0 {
+	if caps.Terminal || caps.Color || caps.Width != 0 || caps.Height != 0 {
 		t.Fatalf("a file is not a terminal: %+v", caps)
 	}
 	if caps.QR() != QRHalfBlocks {

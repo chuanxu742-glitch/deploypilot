@@ -2,9 +2,11 @@ const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { mkdirSync } = require("node:fs");
 (async () => {
   const root = path.resolve(__dirname, "../..");
   process.chdir(root);
+  mkdirSync(path.join(root, ".probe-tmp/ui-screenshots"), { recursive: true });
   const preview = spawn(
     process.execPath,
     [
@@ -12,7 +14,7 @@ const { spawn } = require("node:child_process");
         path.dirname(require.resolve("vite/package.json")),
         "bin/vite.js",
       ),
-      "preview",
+      ...(process.env.DP_WORKSPACE_DEV === "1" ? [] : ["preview"]),
       "--host",
       "127.0.0.1",
       "--port",
@@ -90,10 +92,11 @@ const { spawn } = require("node:child_process");
       );
     };
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
     let terminalConnections = 0,
       agentConnections = 0,
       starts = 0,
+      steers = 0,
       agentSocket,
       terminalSocket;
     const manualInputs = [];
@@ -322,6 +325,7 @@ const { spawn } = require("node:child_process");
         if (message.type === "start") {
           startTask(message.task, socket, message.requestId);
         }
+        if (message.type === "steer") steers++;
         if (message.type === "stop") {
           setAgentState("stopping");
           currentTask.phase = "stopping";
@@ -356,6 +360,75 @@ const { spawn } = require("node:child_process");
         .querySelector(".term .xterm-rows")
         ?.textContent.includes("DeployPilot remote session"),
     );
+    const focusConnections = [terminalConnections, agentConnections];
+    const splitTaskWidth = (await page.locator(".agent-panel").boundingBox())
+      .width;
+    await page.locator("#task-input").fill("专注视图中的草稿");
+    await page.getByRole("button", { name: "专注对话", exact: true }).click();
+    assert.equal(await page.locator("#terminal-panel").isVisible(), false);
+    assert.equal(await page.locator(".splitter").isVisible(), false);
+    assert.equal(await page.locator(".term .xterm").count(), 1);
+    assert.ok(
+      (await page.locator(".agent-panel").boundingBox()).width >
+        splitTaskWidth + 200,
+      "focus mode gives the conversation substantially more reading space",
+    );
+    sendTerminalOutput("\r\nFOCUS-OUTPUT-PRESERVED\r\n");
+    await page.screenshot({
+      path: path.resolve(".probe-tmp/ui-screenshots/focus-conversation.png"),
+    });
+    await page
+      .getByRole("button", { name: "显示终端分栏", exact: true })
+      .click();
+    assert.equal(await page.locator("#terminal-panel").isVisible(), true);
+    assert.equal(
+      await page.locator("#task-input").inputValue(),
+      "专注视图中的草稿",
+    );
+    await page.waitForFunction(() =>
+      document
+        .querySelector(".term .xterm-rows")
+        ?.textContent.includes("FOCUS-OUTPUT-PRESERVED"),
+    );
+    assert.deepEqual(
+      [terminalConnections, agentConnections],
+      focusConnections,
+      "focus mode keeps both connections and the mounted terminal intact",
+    );
+    await page.locator("#task-input").fill("");
+    console.log(
+      "PASS: conversation focus expands reading space while preserving draft, terminal output and connections.",
+    );
+    if (process.env.DP_WORKSPACE_FOCUS_ONLY === "1") {
+      await page.getByRole("button", { name: "专注对话", exact: true }).click();
+      await page.reload();
+      await page
+        .getByRole("button", { name: "显示终端分栏", exact: true })
+        .waitFor();
+      assert.equal(
+        await page.locator("#terminal-panel").isVisible(),
+        false,
+        "focus preference survives a fresh page load",
+      );
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(
+        await page.locator(".task-focus-control").isVisible(),
+        false,
+      );
+      await page.getByRole("button", { name: "远程终端", exact: true }).click();
+      assert.equal(
+        await page.locator("#terminal-panel").isVisible(),
+        true,
+        "desktop focus preference does not break mobile terminal navigation",
+      );
+      await page.getByRole("button", { name: "部署任务", exact: true }).click();
+      assert.equal(await page.locator(".agent-panel").isVisible(), true);
+      assert.deepEqual(errors, []);
+      console.log(
+        "PASS: focus preference reload and mobile tabs remain usable.",
+      );
+      return;
+    }
     await copyTerminalLine("Control+c", "DeployPilot remote session");
     await copyTerminalLine("Control+Shift+c", "DeployPilot remote session");
     await copyTerminalLine("Meta+c", "DeployPilot remote session");
@@ -402,6 +475,22 @@ const { spawn } = require("node:child_process");
     const taskWidth = async () =>
       (await page.locator("#agent-panel").boundingBox()).width;
     const beforeResize = await taskWidth();
+    const initialSplitGeometry = await page.evaluate(() => {
+      const rect = (selector) => {
+        const box = document.querySelector(selector)?.getBoundingClientRect();
+        return box && { x: box.x, width: box.width };
+      };
+      return {
+        viewport: innerWidth,
+        body: rect(".app-body"),
+        sidebar: rect(".session-sidebar"),
+        workspace: rect(".workspace"),
+        terminal: rect("#terminal-panel"),
+        agent: rect("#agent-panel"),
+        splitter: rect(".splitter"),
+        sidebarHidden: document.querySelector(".session-sidebar")?.hidden,
+      };
+    });
     const splitter = page.getByRole("separator", { name: "调整面板宽度" });
     const splitterBounds = await splitter.boundingBox();
     await page.mouse.move(
@@ -414,9 +503,10 @@ const { spawn } = require("node:child_process");
       splitterBounds.y + 80,
     );
     await page.mouse.up();
+    const afterPointerDrag = await taskWidth();
     assert.ok(
-      (await taskWidth()) < beforeResize,
-      "dragging separator grows the terminal",
+      afterPointerDrag < beforeResize,
+      `dragging separator grows the terminal (${beforeResize} -> ${afterPointerDrag}, split=${await splitter.getAttribute("aria-valuenow")})`,
     );
     const afterDrag = await taskWidth();
     await splitter.focus();
@@ -432,6 +522,61 @@ const { spawn } = require("node:child_process");
         .getByRole("button", { name: labels[value], exact: true })
         .click();
       await page.keyboard.press("Escape");
+    };
+    const checkTerminalTheme = async (light) => {
+      const result = await page.evaluate(() => {
+        const luminance = (color) => {
+          const [r, g, b] = color
+            .match(/[\d.]+/g)
+            .slice(0, 3)
+            .map(Number)
+            .map((v) => {
+              const n = v / 255;
+              return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4;
+            });
+          return r * 0.2126 + g * 0.7152 + b * 0.0722;
+        };
+        const surface = getComputedStyle(
+          document.querySelector(".term-panel"),
+        ).backgroundColor;
+        const viewport = getComputedStyle(
+          document.querySelector(".xterm-viewport"),
+        ).backgroundColor;
+        const bg = luminance(surface);
+        const text = [...document.querySelectorAll(".xterm-rows span")].filter(
+          (el) => el.textContent.trim(),
+        );
+        return {
+          surface,
+          viewport,
+          light: bg > 0.5,
+          contrasts: text.map((el) => {
+            const fg = luminance(getComputedStyle(el).color);
+            return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+          }),
+          output: document.querySelector(".xterm-rows").textContent,
+        };
+      });
+      assert.equal(
+        result.light,
+        light,
+        `terminal follows theme: ${result.surface}`,
+      );
+      assert.equal(
+        result.surface,
+        result.viewport,
+        "terminal chrome and viewport agree",
+      );
+      assert.ok(
+        result.contrasts.length > 0 &&
+          result.contrasts.every((value) => value >= 4.5),
+        `terminal text contrast: ${result.contrasts}`,
+      );
+      assert.ok(
+        result.output.includes("Welcome to your deployment workspace."),
+        "theme switch preserves terminal scrollback",
+      );
+      return result.surface;
     };
     assert.equal(
       await page.locator("html").getAttribute("data-theme"),
@@ -516,9 +661,7 @@ const { spawn } = require("node:child_process");
       "hovered primary button text must remain visible in night mode",
     );
     await page.screenshot({
-      path: path.resolve(
-        "docs/changes/ui-task-experience/night-button-hover.png",
-      ),
+      path: path.resolve(".probe-tmp/ui-screenshots/night-button-hover.png"),
     });
     await page.locator("#task-input").fill("");
     await page.mouse.move(0, 0);
@@ -529,13 +672,14 @@ const { spawn } = require("node:child_process");
     const nightSurface = await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue("--gray-1"),
     );
+    const nightTerminalSurface = await checkTerminalTheme(false);
     assert.equal(
       terminalConnections,
       initialTerminalConnections,
       "theme changes preserve terminal socket",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/night.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/night.png"),
     });
     await selectTheme("comfort");
     await checkContrast();
@@ -546,15 +690,24 @@ const { spawn } = require("node:child_process");
     const comfortSurface = await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue("--gray-1"),
     );
+    const comfortTerminalSurface = await checkTerminalTheme(true);
+    assert.notEqual(comfortTerminalSurface, nightTerminalSurface);
     assert.notEqual(comfortSurface, nightSurface);
     assert.equal(
       await page.evaluate(() => localStorage.getItem("deploypilot:theme")),
       "comfort",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/comfort.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/comfort.png"),
     });
     await selectTheme("day");
+    const dayTerminalSurface = await checkTerminalTheme(true);
+    assert.notEqual(dayTerminalSurface, comfortTerminalSurface);
+    assert.equal(
+      terminalConnections,
+      initialTerminalConnections,
+      "all theme switches preserve the shell connection",
+    );
     await page.reload();
     await page.getByRole("heading", { name: "开始部署" }).waitFor();
     assert.equal(await page.locator("html").getAttribute("data-theme"), "day");
@@ -657,8 +810,32 @@ const { spawn } = require("node:child_process");
     };
     await auditStyles();
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/desktop.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/desktop.png"),
     });
+    await page.screenshot({
+      path: path.resolve(".probe-tmp/ui-screenshots/codex-desktop.png"),
+    });
+    assert.equal(await page.locator(".session-sidebar").isVisible(), true);
+    const workspaceWidthWithSidebar = await page
+      .locator(".workspace")
+      .evaluate((el) => el.getBoundingClientRect().width);
+    const sidebarTerminalConnections = terminalConnections;
+    await page.getByRole("button", { name: "收起会话导航" }).click();
+    assert.equal(await page.locator(".session-sidebar").isVisible(), false);
+    const workspaceWidthWithoutSidebar = await page
+      .locator(".workspace")
+      .evaluate((el) => el.getBoundingClientRect().width);
+    assert.ok(
+      workspaceWidthWithoutSidebar > workspaceWidthWithSidebar,
+      "collapsing the session list returns its width to the workspace",
+    );
+    await page.getByRole("button", { name: "展开会话导航" }).click();
+    assert.equal(await page.locator(".session-sidebar").isVisible(), true);
+    assert.equal(
+      terminalConnections,
+      sidebarTerminalConnections,
+      "collapsing the session list keeps the shared terminal connection",
+    );
     assert.equal(
       await page.locator("#terminal-panel").isVisible(),
       true,
@@ -672,7 +849,7 @@ const { spawn } = require("node:child_process");
       "terminal must stay left of tasks",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/workspace-split.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/workspace-split.png"),
     });
     assert.equal(
       terminalConnections,
@@ -686,7 +863,7 @@ const { spawn } = require("node:child_process");
     await page.locator(".model-button").click();
     await auditStyles();
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/settings.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/settings.png"),
     });
     assert.equal(await page.getByLabel("模型名称").inputValue(), "bailu-auto");
     await page.getByRole("button", { name: "获取列表" }).click();
@@ -697,7 +874,7 @@ const { spawn } = require("node:child_process");
       "opening the model menu must expose all fetched models",
     );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/model-list.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/model-list.png"),
     });
     await page.getByRole("option", { name: longModel, exact: true }).click();
     assert.equal(await page.getByLabel("模型名称").inputValue(), longModel);
@@ -788,12 +965,42 @@ const { spawn } = require("node:child_process");
     );
     await page.getByText("执行工具", { exact: true }).waitFor();
     await page.getByText("我会先检查监听端口", { exact: true }).waitFor();
+    sendTaskEvent({
+      type: "final",
+      state: "reply",
+      text: "我会先检查监听端口",
+      success: false,
+    });
+    sendTaskEvent({ type: "status", text: "普通回复已结束" });
+    await page.getByText("普通回复已结束", { exact: true }).waitFor();
+    assert.equal(
+      await page.locator(".tl-final, .final-card").count(),
+      0,
+      "a reply final is already represented by its streamed assistant message",
+    );
+    assert.equal(await page.locator(".tl-error").count(), 0);
+    sendTaskEvent({
+      type: "final",
+      state: "needs_input",
+      text: "请补充目标服务地址。",
+      success: false,
+    });
+    sendTaskEvent({ type: "status", text: "补充信息状态已收到" });
+    await page.getByText("补充信息状态已收到", { exact: true }).waitFor();
+    const needsInput = page
+      .locator(".tl-final")
+      .filter({ hasText: "等待补充信息" });
+    await needsInput.waitFor();
+    await needsInput
+      .getByText("请补充目标服务地址。", { exact: true })
+      .waitFor();
+    assert.equal(await needsInput.locator(".tl-error").count(), 0);
     await page.locator(".machine-details summary").waitFor();
     await page
       .locator(".action-evidence")
       .getByText("启动目录 /srv/app", { exact: true })
       .waitFor();
-    await page.getByText("42 ms", { exact: true }).waitFor();
+    await page.getByText("42毫秒", { exact: true }).waitFor();
     assert.equal(
       await page.getByRole("button", { name: "停止任务" }).isEnabled(),
       true,
@@ -829,13 +1036,21 @@ const { spawn } = require("node:child_process");
       "Enter while preparing a draft during execution inserts a newline",
     );
     assert.equal(
-      await page.getByRole("button", { name: "执行任务" }).isEnabled(),
-      false,
+      await page
+        .getByRole("button", { name: "发送补充", exact: true })
+        .isEnabled(),
+      true,
+      "a nonempty running draft can be sent explicitly as a supplement",
     );
     await page.getByPlaceholder("补充当前任务").press("Control+Enter");
     assert.equal(starts, 1, "drafting during a run cannot start another task");
+    assert.equal(
+      steers,
+      0,
+      "Enter and Ctrl+Enter do not silently submit a running draft",
+    );
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/task-running.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/task-running.png"),
     });
     for (let i = 0; i < 45; i++)
       sendTaskEvent({
@@ -851,6 +1066,9 @@ const { spawn } = require("node:child_process");
     await page.getByRole("button", { name: "返回最新记录" }).waitFor();
     await page.getByRole("button", { name: "返回最新记录" }).click();
     await page.getByRole("button", { name: "停止任务" }).click();
+    const failedFinal = page.locator(".tl-final.tl-error");
+    await failedFinal.getByText("任务未完成", { exact: true }).waitFor();
+    await failedFinal.getByText("任务已停止。", { exact: true }).waitFor();
     assert.equal(
       await page.locator(".term").getAttribute("data-readonly"),
       "true",
@@ -886,11 +1104,18 @@ const { spawn } = require("node:child_process");
       ),
       "manual screen and cursor context survive agent output",
     );
+    // An independent retry is explicit; a legacy history without continuation
+    // capability must never silently become another task.
+    await page.getByRole("button", { name: "新建会话", exact: true }).click();
     await page.locator("#task-input").fill("重新检查部署环境");
     await page.getByRole("button", { name: "执行任务" }).click();
     await page.getByRole("button", { name: "停止任务" }).waitFor();
     assert.equal(starts, 2);
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "展开会话导航" }).waitFor();
+    await page.screenshot({
+      path: path.resolve(".probe-tmp/ui-screenshots/codex-mobile.png"),
+    });
     const stopBounds = await page.locator(".stop-compact").boundingBox();
     assert.ok(
       stopBounds.x >= 0 && stopBounds.x + stopBounds.width <= 390,
@@ -904,9 +1129,7 @@ const { spawn } = require("node:child_process");
       ),
     );
     await page.screenshot({
-      path: path.resolve(
-        "docs/changes/ui-task-experience/task-running-mobile.png",
-      ),
+      path: path.resolve(".probe-tmp/ui-screenshots/task-running-mobile.png"),
     });
     const startsBeforeReconnect = starts;
     const connectionsBeforeReconnect = agentConnections;
@@ -946,12 +1169,8 @@ const { spawn } = require("node:child_process");
     );
     const connectionsBeforeTerminalReconnect = terminalConnections;
     const resetsBeforeTerminalReconnect = terminalResets;
+    // The terminal reconnects on its own after a dropped connection.
     terminalSocket.close();
-    await page
-      .locator("#terminal-panel [role=status]")
-      .getByText("已断开", { exact: true })
-      .waitFor();
-    await page.getByRole("button", { name: "重新连接", exact: true }).click();
     for (
       let attempt = 0;
       attempt < 80 &&
@@ -961,7 +1180,7 @@ const { spawn } = require("node:child_process");
       await page.waitForTimeout(50);
     assert.ok(
       terminalConnections > connectionsBeforeTerminalReconnect,
-      "terminal can reconnect to the shared PTY",
+      "terminal reconnects to the shared PTY without a click",
     );
     for (
       let attempt = 0;
@@ -1049,7 +1268,14 @@ const { spawn } = require("node:child_process");
     );
     const startsBeforeHistory = starts;
     const taskReadsBeforeHistory = taskReads.length;
-    await page.getByLabel("任务历史").selectOption("task-1");
+    await page.getByRole("button", { name: "展开会话导航" }).click();
+    await page.screenshot({
+      path: path.resolve(".probe-tmp/ui-screenshots/codex-session-drawer.png"),
+    });
+    await page
+      .locator(".session-item")
+      .filter({ hasText: "检查目标机器的系统版本" })
+      .click();
     await page
       .getByRole("heading", {
         name: "检查目标机器的系统版本、磁盘、内存和 GPU 环境",
@@ -1074,11 +1300,12 @@ const { spawn } = require("node:child_process");
       startsBeforeHistory,
       "browsing task history never starts a task",
     );
-    await page.getByRole("button", { name: "新建任务" }).click();
+    await page.getByRole("button", { name: "展开会话导航" }).click();
+    await page.getByRole("button", { name: "新建会话" }).click();
     await page.getByRole("heading", { name: "开始部署" }).waitFor();
     await auditStyles();
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/mobile.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/mobile.png"),
     });
     await page.locator(".model-button").click();
     assert.equal(await page.getByRole("dialog").isVisible(), true);
@@ -1091,8 +1318,33 @@ const { spawn } = require("node:child_process");
     );
     await page.keyboard.press("Escape");
     config = { hasKey: false, model: "bailu-auto" };
+    const retainedTaskId = currentTask.id;
+    const startsBeforeConfigReload = starts;
     await page.reload();
+    await page
+      .locator(
+        `.session-item[data-task-id="${retainedTaskId}"][data-selected="true"]`,
+      )
+      .waitFor({ state: "attached" });
+    assert.equal(
+      starts,
+      startsBeforeConfigReload,
+      "refresh restores the saved task without starting it again",
+    );
+    console.log(
+      `PASS: unconfigured-model reload restores ${retainedTaskId}; opening a new conversation is explicit.`,
+    );
+    // New-session view is page state; the server still retains the last task after reload.
+    await page
+      .getByRole("button", { name: "展开会话导航", exact: true })
+      .click();
+    await page.getByRole("button", { name: "新建会话", exact: true }).click();
     await page.getByRole("heading", { name: "开始部署" }).waitFor();
+    assert.equal(
+      starts,
+      startsBeforeConfigReload,
+      "new conversation view does not execute a task",
+    );
     await page.locator(".model-button").click();
     assert.equal(
       await page.getByRole("button", { name: "获取列表" }).isEnabled(),
@@ -1111,7 +1363,7 @@ const { spawn } = require("node:child_process");
     await page.getByRole("option", { name: longModel, exact: true }).click();
     assert.equal(await page.getByLabel("模型名称").inputValue(), longModel);
     await page.screenshot({
-      path: path.resolve("docs/changes/ui-task-experience/model-mobile.png"),
+      path: path.resolve(".probe-tmp/ui-screenshots/model-mobile.png"),
     });
     await page.keyboard.press("Escape");
     for (const viewport of [

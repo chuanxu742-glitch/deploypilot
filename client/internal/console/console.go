@@ -22,6 +22,8 @@ type Caps struct {
 	NarrowBlocks bool
 	// Width is the terminal width in columns, or 0 when unknown.
 	Width int
+	// Height is the terminal height in rows, or 0 when unknown.
+	Height int
 }
 
 // Prepare inspects f and, on Windows, enables ANSI processing for it. Call
@@ -33,8 +35,8 @@ func Prepare(f *os.File) (caps Caps, restore func()) {
 		return Caps{NarrowBlocks: true}, restore
 	}
 	caps.Terminal = true
-	if width, _, err := term.GetSize(int(f.Fd())); err == nil {
-		caps.Width = width
+	if width, height, err := term.GetSize(int(f.Fd())); err == nil {
+		caps.Width, caps.Height = width, height
 	}
 	caps.NarrowBlocks = narrowBlocks(f)
 	ansi, restore := enableANSI(f)

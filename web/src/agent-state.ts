@@ -15,6 +15,8 @@ export interface AgentEvent {
   hostname?: string;
   cwd?: string;
   callId?: string;
+  timeoutSeconds?: number;
+  logPath?: string;
   requestId?: string;
 }
 
@@ -27,9 +29,14 @@ export type TaskPhase =
   | "interrupted"
   | "disconnected";
 
-/** A final event the model reported as an explicit failure (success === false). */
+/** An explicit task failure; normal replies and requests for input are neutral. */
 export function isFailedFinal(event: AgentEvent): boolean {
-  return event.type === "final" && event.success === false;
+  return (
+    event.type === "final" &&
+    event.state !== "reply" &&
+    event.state !== "needs_input" &&
+    event.success === false
+  );
 }
 
 export const MAX_EVENTS = 300;
@@ -82,6 +89,16 @@ export function mergeEvent(
       { ...last, text: clip((last.text ?? "") + (event.text ?? "")) },
     ].slice(-MAX_EVENTS);
   }
+  if (
+    event.type === "activity" &&
+    event.state === "waiting" &&
+    last?.type === "activity" &&
+    last.state === "waiting" &&
+    last.callId === event.callId &&
+    last.taskId === event.taskId
+  ) {
+    return [...previous.slice(0, -1), bounded].slice(-MAX_EVENTS);
+  }
   return [...previous, bounded].slice(-MAX_EVENTS);
 }
 
@@ -90,8 +107,11 @@ export interface ActionItem {
   key: number;
   call?: AgentEvent;
   output?: string;
+  progress?: string;
   done?: AgentEvent;
   error?: string;
+  errorState?: string;
+  logPath?: string;
 }
 export type TimelineItem =
   | {
@@ -107,6 +127,18 @@ export type TimelineItem =
  * Output or completion without a preceding call (the call was trimmed by
  * MAX_EVENTS) becomes its own action so nothing is dropped.
  */
+/** The most recent action started by the tool call with this ID. */
+function findAction(
+  items: TimelineItem[],
+  callId: string,
+): ActionItem | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "action" && item.call?.callId === callId) return item;
+  }
+  return undefined;
+}
+
 export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   let open: ActionItem | null = null;
@@ -114,6 +146,25 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
     const event = events[index];
     const key = event.id ?? index;
     if (event.type === "activity") {
+      if (
+        event.state === "waiting" &&
+        event.tool === "wait_for" &&
+        event.callId
+      ) {
+        const action = [...items]
+          .reverse()
+          .find(
+            (item): item is ActionItem =>
+              item.kind === "action" &&
+              item.call?.tool === "wait_for" &&
+              item.call.callId === event.callId &&
+              (event.taskId === undefined ||
+                item.call.taskId === undefined ||
+                item.call.taskId === event.taskId),
+          );
+        if (action && !action.done && action.error === undefined)
+          action.progress = event.text ?? "";
+      }
       for (let i = items.length - 1; i >= 0; i--) {
         if (items[i].kind === "activity") items.splice(i, 1);
       }
@@ -122,30 +173,14 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       open = { kind: "action", key, call: event };
       items.push(open);
     } else if (event.type === "output") {
-      if (event.callId) {
-        open =
-          [...items]
-            .reverse()
-            .find(
-              (item): item is ActionItem =>
-                item.kind === "action" && item.call?.callId === event.callId,
-            ) ?? null;
-      }
+      if (event.callId) open = findAction(items, event.callId) ?? null;
       if (!open || open.done || open.error !== undefined) {
         open = { kind: "action", key };
         items.push(open);
       }
       open.output = (open.output ?? "") + (event.text ?? "");
     } else if (event.type === "tool_done") {
-      if (event.callId) {
-        open =
-          [...items]
-            .reverse()
-            .find(
-              (item): item is ActionItem =>
-                item.kind === "action" && item.call?.callId === event.callId,
-            ) ?? null;
-      }
+      if (event.callId) open = findAction(items, event.callId) ?? null;
       if (!open || open.done) {
         open = { kind: "action", key };
         items.push(open);
@@ -153,17 +188,15 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       open.done = event;
     } else if (event.type === "error") {
       const target = event.callId
-        ? [...items]
-            .reverse()
-            .find(
-              (item): item is ActionItem =>
-                item.kind === "action" && item.call?.callId === event.callId,
-            )
+        ? findAction(items, event.callId)
         : open && !open.done && open.error === undefined
           ? open
           : undefined;
-      if (target) target.error = event.text ?? "";
-      else {
+      if (target) {
+        target.error = event.text ?? "";
+        target.errorState = event.state;
+        target.logPath = event.logPath ?? target.logPath;
+      } else {
         open = null;
         items.push({ kind: "error", key, event });
       }
@@ -184,8 +217,6 @@ export function buildTimeline(events: AgentEvent[]): TimelineItem[] {
       if (event.type === "user") items.push({ kind: "user", key, event });
       else if (event.type === "status")
         items.push({ kind: "note", key, event });
-      else if (event.type === "error")
-        items.push({ kind: "error", key, event });
       else if (event.type === "final")
         items.push({ kind: "final", key, event });
     }

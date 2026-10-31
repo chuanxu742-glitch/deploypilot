@@ -16,12 +16,16 @@ import { Terminal, type TerminalConnection } from "./Terminal";
 import { AgentPanel, isBusy, phaseTone } from "./Agent";
 import type { TaskPhase } from "./agent-state";
 import { Icon } from "./Icon";
+import brandMark from "./assets/bailu-mark.png";
+import "./workspace-focus.css";
 import {
   clampSplitRatio,
   readPreference,
   readSplitRatio,
   resolveTheme,
   writePreference,
+  isNarrowScreen,
+  NARROW_MEDIA_QUERY,
   type ThemeName,
 } from "./ui-preferences";
 
@@ -46,7 +50,19 @@ export function App() {
   const [split, setSplit] = useState(() =>
     readSplitRatio(readPreference("deploypilot:split")),
   );
+  const [focusTask, setFocusTask] = useState(
+    () => readPreference("deploypilot:focus-task") === "true",
+  );
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => window.innerWidth >= 1280,
+  );
+  const [sidebarTarget, setSidebarTarget] = useState<HTMLDivElement | null>(
+    null,
+  );
   const workspaceRef = useRef<HTMLElement>(null);
+  const topbarRef = useRef<HTMLElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const [narrow, setNarrow] = useState(isNarrowScreen);
   const authed = auth.kind === "authed";
 
   useEffect(() => {
@@ -102,6 +118,9 @@ export function App() {
     writePreference("deploypilot:split", String(split));
   }, [split]);
   useEffect(() => {
+    writePreference("deploypilot:focus-task", String(focusTask));
+  }, [focusTask]);
+  useEffect(() => {
     if (!authed) return;
     let active = true;
     machineInfo()
@@ -115,6 +134,74 @@ export function App() {
       active = false;
     };
   }, [auth.kind]);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && isNarrowScreen()) setSidebarOpen(false);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [sidebarOpen]);
+  useEffect(() => {
+    const media = window.matchMedia(NARROW_MEDIA_QUERY);
+    const closeDrawer = (event: MediaQueryListEvent) => {
+      setNarrow(event.matches);
+      if (event.matches) setSidebarOpen(false);
+    };
+    media.addEventListener("change", closeDrawer);
+    return () => media.removeEventListener("change", closeDrawer);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!sidebarOpen || !narrow || !sidebarTarget) return;
+    const sidebar = sidebarRef.current;
+    const workspace = workspaceRef.current;
+    const topbar = topbarRef.current;
+    if (!sidebar || !workspace || !topbar) return;
+    // The mobile navigation is modal: background controls cannot send tasks.
+    workspace.inert = true;
+    topbar.inert = true;
+    const controls = () =>
+      Array.from(
+        sidebar.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], [tabindex="0"]',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+    const focusFirst = () => (controls()[0] ?? sidebar).focus();
+    focusFirst();
+    const trapTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = controls();
+      const current = document.activeElement;
+      if (
+        !items.length ||
+        !sidebar.contains(current) ||
+        (event.shiftKey
+          ? current === items[0]
+          : current === items[items.length - 1])
+      ) {
+        event.preventDefault();
+        (event.shiftKey
+          ? (items[items.length - 1] ?? sidebar)
+          : (items[0] ?? sidebar)
+        ).focus();
+      }
+    };
+    const keepFocus = (event: FocusEvent) => {
+      if (event.target instanceof Node && !sidebar.contains(event.target))
+        focusFirst();
+    };
+    document.addEventListener("keydown", trapTab);
+    document.addEventListener("focusin", keepFocus);
+    return () => {
+      document.removeEventListener("keydown", trapTab);
+      document.removeEventListener("focusin", keepFocus);
+      workspace.inert = false;
+      topbar.inert = false;
+      topbar.querySelector<HTMLButtonElement>(".sidebar-toggle")?.focus();
+    };
+  }, [sidebarOpen, narrow, sidebarTarget]);
 
   const resizeSplit = (event: ReactPointerEvent<HTMLDivElement>) => {
     const bounds = workspaceRef.current?.getBoundingClientRect();
@@ -147,9 +234,34 @@ export function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
+      <header className="topbar" ref={topbarRef}>
+        {authed && (
+          <button
+            className="icon-button sidebar-toggle"
+            aria-label={sidebarOpen ? "收起会话导航" : "展开会话导航"}
+            title={sidebarOpen ? "收起会话导航" : "展开会话导航"}
+            aria-controls="session-sidebar"
+            aria-expanded={sidebarOpen}
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            <Icon
+              name={sidebarOpen ? "sidebarClose" : "sidebarOpen"}
+              size={18}
+            />
+          </button>
+        )}
         <div className="brand">
-          <h1 className="brand-name">DeployPilot</h1>
+          <img
+            className="brand-mark"
+            src={brandMark}
+            width={28}
+            height={28}
+            alt=""
+          />
+          <h1 className="brand-name">
+            <span className="brand-house">BaiLu</span>{" "}
+            <span className="brand-product">DeployPilot</span>
+          </h1>
         </div>
         {authed && (
           <nav className="view-switch" aria-label="切换面板">
@@ -193,6 +305,16 @@ export function App() {
         )}
         {authed ? (
           <>
+            <button
+              className="icon-button task-focus-control"
+              aria-label={focusTask ? "显示终端分栏" : "专注对话"}
+              title={focusTask ? "显示终端分栏" : "专注对话"}
+              aria-pressed={focusTask}
+              aria-controls="agent-panel terminal-panel"
+              onClick={() => setFocusTask((value) => !value)}
+            >
+              <Icon name={focusTask ? "terminal" : "spark"} size={18} />
+            </button>
             <button
               className="icon-button theme-control"
               aria-label="外观设置"
@@ -254,51 +376,80 @@ export function App() {
         )}
       </header>
       {authed ? (
-        <main
-          ref={workspaceRef}
-          className="workspace"
-          data-view={view}
-          style={
-            {
-              "--terminal-ratio": `${split}fr`,
-              "--task-ratio": `${1 - split}fr`,
-            } as CSSProperties
-          }
-        >
-          {/* Both panels stay mounted so switching views keeps the task and the shell. */}
-          <section
-            className="panel term-panel dark"
-            id="terminal-panel"
-            aria-label="远程终端"
+        <div className="app-body" data-sidebar-open={sidebarOpen}>
+          <aside
+            ref={sidebarRef}
+            id="session-sidebar"
+            className="session-sidebar"
+            aria-label="会话导航"
+            aria-hidden={!sidebarOpen}
+            role={narrow ? "dialog" : undefined}
+            aria-modal={narrow && sidebarOpen ? true : undefined}
+            tabIndex={-1}
           >
-            <Terminal
-              theme={theme}
-              taskActive={isBusy(taskPhase)}
-              onConnectionChange={setTerminal}
+            <div className="session-sidebar-root" ref={setSidebarTarget} />
+          </aside>
+          {sidebarOpen && (
+            <button
+              className="session-sidebar-backdrop"
+              aria-label="关闭会话导航"
+              onClick={() => setSidebarOpen(false)}
+              tabIndex={-1}
             />
-          </section>
-          <div
-            className="splitter"
-            role="separator"
-            aria-label="调整面板宽度"
-            aria-orientation="vertical"
-            aria-valuemin={40}
-            aria-valuemax={75}
-            aria-valuenow={Math.round(split * 100)}
-            tabIndex={0}
-            onPointerDown={resizeSplit}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowRight") {
-                event.preventDefault();
-                setSplit((value) => clampSplitRatio(value + 0.02));
-              } else if (event.key === "ArrowLeft") {
-                event.preventDefault();
-                setSplit((value) => clampSplitRatio(value - 0.02));
-              }
-            }}
-          />
-          <AgentPanel version={machine?.version} onPhaseChange={setTaskPhase} />
-        </main>
+          )}
+          <main
+            ref={workspaceRef}
+            className="workspace"
+            data-view={view}
+            data-focus-task={focusTask && !narrow}
+            style={
+              {
+                "--terminal-ratio": `${split}fr`,
+                "--task-ratio": `${1 - split}fr`,
+              } as CSSProperties
+            }
+          >
+            {/* View changes hide panels without replacing their task or terminal connections. */}
+            <section
+              className="panel term-panel"
+              id="terminal-panel"
+              aria-label="远程终端"
+            >
+              <Terminal
+                theme={theme}
+                taskActive={isBusy(taskPhase)}
+                onConnectionChange={setTerminal}
+              />
+            </section>
+            <div
+              className="splitter"
+              role="separator"
+              aria-label="调整面板宽度"
+              aria-orientation="vertical"
+              aria-valuemin={40}
+              aria-valuemax={75}
+              aria-valuenow={Math.round(split * 100)}
+              tabIndex={focusTask && !narrow ? -1 : 0}
+              onPointerDown={resizeSplit}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowRight") {
+                  event.preventDefault();
+                  setSplit((value) => clampSplitRatio(value + 0.02));
+                } else if (event.key === "ArrowLeft") {
+                  event.preventDefault();
+                  setSplit((value) => clampSplitRatio(value - 0.02));
+                }
+              }}
+            />
+            <AgentPanel
+              version={machine?.version}
+              onPhaseChange={setTaskPhase}
+              sidebarTarget={sidebarTarget}
+              onCloseSidebar={() => setSidebarOpen(false)}
+              onShowTask={() => setView("task")}
+            />
+          </main>
+        </div>
       ) : (
         <div className="gate">
           <div className="gate-card">{renderGate(auth)}</div>
@@ -335,7 +486,7 @@ function renderGate(auth: AuthState) {
           <ol className="gate-steps">
             <li>
               <span className="step-num">1</span>
-              在目标机器上运行 DeployPilot
+              在目标机器上运行 BaiLu DeployPilot
             </li>
             <li>
               <span className="step-num">2</span>

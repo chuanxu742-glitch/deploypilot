@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -47,7 +49,17 @@ type ReadResult struct {
 	Size       int64
 	NextOffset int64
 	EOF        bool
+	// FileInfo optionally identifies the file actually read. Use the opened
+	// file's Stat result so Windows captures its identity before the path rotates.
+	FileInfo os.FileInfo
 }
+
+// DefaultCommandTimeout applies when a command sets no time limit.
+const DefaultCommandTimeout = 10 * time.Minute
+
+// workingDirectoryer is an executor that keeps a current directory (the
+// shared terminal does).
+type workingDirectoryer interface{ WorkingDirectory() string }
 
 // Executor runs the side-effecting operations the agent is allowed to perform.
 // It is an interface so tests can substitute a fake.
@@ -75,9 +87,22 @@ type shellExecutor struct{}
 // NewShellExecutor returns the default host executor.
 func NewShellExecutor() Executor { return shellExecutor{} }
 
-func (shellExecutor) Run(ctx context.Context, command string, timeout time.Duration, onOutput func(string)) (int, string, error) {
+func (shellExecutor) Run(ctx context.Context, command string, timeout time.Duration, onOutput func(string)) (exitCode int, output string, runErr error) {
+	commandLog, err := NewCommandLog()
+	if err != nil {
+		return -1, "", err
+	}
+	defer func() {
+		if err := commandLog.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("save full command output to %s: %w", commandLog.Path(), err))
+		}
+		if output != "" {
+			output += "\n"
+		}
+		output += CommandLogReference(commandLog.Path())
+	}()
 	if timeout <= 0 {
-		timeout = 10 * time.Minute
+		timeout = DefaultCommandTimeout
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -88,22 +113,22 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 
 	var buf cappedBuffer
 	buf.limit = maxCapturedOutput
-	w := &streamWriter{onOutput: onOutput, sink: &buf}
+	w := &streamWriter{onOutput: onOutput, sink: &buf, log: commandLog}
 	cmd.Stdout = w
 	cmd.Stderr = w
 
-	err := runCommand(cmd)
+	runErr = runCommand(cmd)
 	// A successful launcher may leave its output pipe inherited by a service.
 	// WaitDelay closes that pipe; it does not turn exit status 0 into a failure.
-	detached := errors.Is(err, exec.ErrWaitDelay) && runCtx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success()
+	detached := errors.Is(runErr, exec.ErrWaitDelay) && runCtx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success()
 	if detached {
-		err = nil
+		runErr = nil
 	}
 	exit := 0
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+	if runErr != nil {
+		if ee, ok := runErr.(*exec.ExitError); ok {
 			exit = ee.ExitCode()
-			err = nil
+			runErr = nil
 		} else {
 			exit = -1
 		}
@@ -114,11 +139,11 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 	if ctx.Err() != nil {
 		return -1, buf.String(), fmt.Errorf("command cancelled: %w", ctx.Err())
 	}
-	output := buf.String()
+	output = buf.String()
 	if detached {
 		output += "\n[command exited successfully; background output detached; inspect service logs for subsequent output]"
 	}
-	return exit, output, err
+	return exit, output, runErr
 }
 
 func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, error) {
@@ -144,6 +169,17 @@ func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, 
 		return ReadResult{}, fmt.Errorf("%s is a directory; use run_command (ls) instead", path)
 	}
 	size := info.Size()
+	// Windows PowerShell 5.1 writes UTF-16LE with a BOM for Out-File and >.
+	// Such text is full of NUL bytes, so decode it rather than call it binary.
+	var bom [2]byte
+	if k, _ := f.ReadAt(bom[:], 0); k == 2 {
+		switch {
+		case bom[0] == 0xFF && bom[1] == 0xFE:
+			return readUTF16(f, info, offset, maxBytes, binary.LittleEndian)
+		case bom[0] == 0xFE && bom[1] == 0xFF:
+			return readUTF16(f, info, offset, maxBytes, binary.BigEndian)
+		}
+	}
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
 			return ReadResult{}, err
@@ -178,12 +214,65 @@ func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, 
 		Size:       size,
 		NextOffset: next,
 		EOF:        next >= size,
+		FileInfo:   info,
+	}, nil
+}
+
+// readUTF16 returns one page of a UTF-16 file (with BOM) as UTF-8 text.
+// Offsets stay byte offsets in the file, so paging with NextOffset works as
+// for UTF-8 files; a page never splits a code unit or a surrogate pair.
+func readUTF16(f *os.File, info os.FileInfo, offset, maxBytes int64, order binary.ByteOrder) (ReadResult, error) {
+	size := info.Size()
+	start := max(offset, 2) // skip the BOM
+	if (start-2)%2 != 0 {
+		start++
+	}
+	if maxBytes < 4 {
+		maxBytes = 4
+	}
+	buf := make([]byte, maxBytes)
+	n, err := f.ReadAt(buf, start)
+	if err != nil && err != io.EOF {
+		return ReadResult{}, err
+	}
+	n -= n % 2
+	units := make([]uint16, n/2)
+	for i := range units {
+		units[i] = order.Uint16(buf[2*i:])
+	}
+	// Keep a high surrogate for the next page unless the file ends here.
+	if k := len(units); k > 0 && utf16.IsSurrogate(rune(units[k-1])) && units[k-1] < 0xDC00 && start+int64(n) < size {
+		units = units[:k-1]
+		n -= 2
+	}
+	next := start + int64(n)
+	return ReadResult{
+		Content:    string(utf16.Decode(units)),
+		Offset:     offset,
+		Size:       size,
+		NextOffset: next,
+		EOF:        next >= size-1, // a dangling odd byte is not text
+		FileInfo:   info,
 	}, nil
 }
 
 func (shellExecutor) WriteFile(path, content string) error {
 	if dir := parentDir(path); dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		info, statErr := os.Stat(real)
+		if statErr != nil {
+			return statErr
+		}
+		if _, err := backupExisting(real, info); err != nil {
+			return err
+		}
+		path = real
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
 }
@@ -233,6 +322,9 @@ func (shellExecutor) EditFile(path, oldStr, newStr string, replaceAll bool) (int
 	} else {
 		content = strings.Replace(content, oldStr, newStr, 1)
 		count = 1
+	}
+	if _, err := backupExisting(real, info); err != nil {
+		return 0, err
 	}
 	// Atomic replace: write a uniquely named temp file beside the real file,
 	// copy its mode and owner, then rename over it.
@@ -401,9 +493,13 @@ func (c *cappedBuffer) String() string {
 type streamWriter struct {
 	onOutput func(string)
 	sink     *cappedBuffer
+	log      *CommandLog
 }
 
 func (w *streamWriter) Write(p []byte) (int, error) {
+	if _, err := w.log.Write(p); err != nil {
+		return 0, err
+	}
 	if w.onOutput != nil {
 		w.onOutput(string(p))
 	}

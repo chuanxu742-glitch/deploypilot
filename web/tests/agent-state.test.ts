@@ -4,6 +4,7 @@ import {
   applyAgentEvent,
   buildTimeline,
   mergeEvent,
+  normalizeEvents,
   MAX_EVENTS,
   MAX_EVENT_TEXT,
   TRUNCATED,
@@ -136,4 +137,108 @@ test("tool error after completion remains attached to its call and overrides suc
   const action = timeline.find((item) => item.kind === "action");
   assert.equal(action?.kind, "action");
   if (action?.kind === "action") assert.equal(action.error, "清理失败");
+});
+
+test("command timeout and cancellation metadata stay on their action rows", () => {
+  const callId = "command-state";
+  const timeline = buildTimeline([
+    {
+      type: "tool_call",
+      tool: "run_command",
+      callId,
+      timestamp: 100,
+      timeoutSeconds: 600,
+    },
+    {
+      type: "tool_done",
+      callId,
+      exitCode: -1,
+      state: "cancelled",
+      durationMs: 374000,
+      logPath: "C:/private/command.log",
+      text: "命令已取消",
+    },
+  ]);
+  const action = timeline.find((item) => item.kind === "action");
+  assert.equal(action?.kind, "action");
+  if (action?.kind === "action") {
+    assert.equal(action.call?.timeoutSeconds, 600);
+    assert.equal(action.call?.timestamp, 100);
+    assert.equal(action.done?.state, "cancelled");
+    assert.equal(action.done?.logPath, "C:/private/command.log");
+    assert.equal(action.done?.durationMs, 374000);
+  }
+
+  const timedOut = buildTimeline([
+    { type: "tool_call", tool: "run_command", callId },
+    {
+      type: "error",
+      callId,
+      state: "timeout",
+      text: "命令已超过 600 秒时限",
+      logPath: "C:/private/timeout.log",
+    },
+  ]).find((item) => item.kind === "action");
+  assert.equal(timedOut?.kind, "action");
+  if (timedOut?.kind === "action") {
+    assert.equal(timedOut.errorState, "timeout");
+    assert.equal(timedOut.error, "命令已超过 600 秒时限");
+    assert.equal(timedOut.logPath, "C:/private/timeout.log");
+  }
+});
+
+test("wait_for progress replaces prior activity and stays linked to its action", () => {
+  const taskId = "task-wait";
+  const callId = "call-wait";
+  const events = normalizeEvents([
+    { id: 1, taskId, type: "tool_call", tool: "wait_for", callId, step: 1 },
+    {
+      id: 2,
+      taskId,
+      type: "activity",
+      state: "waiting",
+      tool: "wait_for",
+      callId,
+      text: "等待 HTTP 服务，已等待 5 秒",
+    },
+    {
+      id: 3,
+      taskId,
+      type: "activity",
+      state: "waiting",
+      tool: "wait_for",
+      callId,
+      text: "等待 HTTP 服务，已等待 10 秒；最近观察：连接被拒绝",
+    },
+    { id: 4, taskId, type: "output", callId, text: "HTTP 200，条件已满足" },
+    { id: 5, taskId, type: "tool_done", callId, exitCode: 0 },
+  ]);
+  const waiting = events.filter(
+    (event) => event.type === "activity" && event.state === "waiting",
+  );
+  assert.equal(waiting.length, 1);
+  assert.equal(
+    waiting[0].text,
+    "等待 HTTP 服务，已等待 10 秒；最近观察：连接被拒绝",
+  );
+
+  const timeline = buildTimeline(events);
+  const activity = timeline.find((item) => item.kind === "activity");
+  assert.equal(activity?.kind, "activity");
+  if (activity?.kind === "activity")
+    assert.equal(activity.event.text, waiting[0].text);
+  const action = timeline.find((item) => item.kind === "action");
+  assert.equal(action?.kind, "action");
+  if (action?.kind === "action") {
+    assert.equal(action.call?.callId, callId);
+    assert.equal(action.progress, waiting[0].text);
+    assert.equal(action.output, "HTTP 200，条件已满足");
+    assert.equal(action.done?.exitCode, 0);
+  }
+
+  const anotherTask = normalizeEvents([
+    { ...waiting[0], taskId: "other-task" },
+    { ...waiting[0], id: 6, taskId: "task-wait" },
+  ]);
+  assert.equal(anotherTask.length, 2);
 });

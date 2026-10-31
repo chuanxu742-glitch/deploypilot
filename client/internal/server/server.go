@@ -60,8 +60,11 @@ type Server struct {
 	agentMaxSteps       int
 	// The most recent finished run's conversation, kept in memory only, so the
 	// operator can continue that task. Guarded by taskMu.
-	lastConversation *agent.Conversation
-	lastConvTaskID   string
+	lastConversation    *agent.Conversation
+	lastConvTaskID      string
+	conversations       map[string]*agent.Conversation
+	taskAcceptingSteers bool
+	gzipped             gzipCache
 }
 
 func (s *Server) acquireAgent() bool {
@@ -97,7 +100,7 @@ type Options struct {
 	LLM *llm.Client
 	// AgentContextBytes bounds each model request; zero uses the agent default.
 	AgentContextBytes int
-	// AgentMaxSteps is the model-turn budget per run; zero uses the default.
+	// AgentMaxSteps caps model turns per run; zero means no cap.
 	AgentMaxSteps  int
 	HistoryDir     string
 	LegacyAuditDir string
@@ -170,7 +173,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	auth.SetCookie(w, sid, s.auth.IdleTimeout())
+	auth.SetCookie(w, sid)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, `{"status":"paired"}`)
 }
@@ -288,20 +291,19 @@ func (s *Server) handleSPA() http.Handler {
 		if upath == "" {
 			upath = "index.html"
 		}
-		if _, err := fs.Stat(s.assets, upath); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				// SPA fallback: serve index.html for unknown non-asset paths.
-				r2 := r.Clone(r.Context())
-				r2.URL.Path = "/"
-				serveIndex(w, r2, s.assets)
-				return
-			}
+		switch info, err := fs.Stat(s.assets, upath); {
+		case errors.Is(err, fs.ErrNotExist):
+			// SPA fallback: serve index.html for unknown non-asset paths.
+			serveIndex(w, s.assets)
+		case err == nil && !info.IsDir():
+			s.serveAsset(w, r, upath, fileServer)
+		default:
+			fileServer.ServeHTTP(w, r)
 		}
-		fileServer.ServeHTTP(w, r)
 	})
 }
 
-func serveIndex(w http.ResponseWriter, r *http.Request, assets fs.FS) {
+func serveIndex(w http.ResponseWriter, assets fs.FS) {
 	f, err := assets.Open("index.html")
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -316,7 +318,6 @@ func serveIndex(w http.ResponseWriter, r *http.Request, assets fs.FS) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
-	_ = r
 }
 
 // quote produces a minimal JSON string literal.

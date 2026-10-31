@@ -114,6 +114,91 @@ func TestSessionIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestHoldSessionSurvivesLongTaskAndRestartsIdleTimeoutOnRelease(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	m := newManager(t, clk)
+	sid, err := m.Pair(m.Token())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, ok := m.HoldSession(sid)
+	if !ok {
+		t.Fatal("valid session was not held")
+	}
+	releaseLast, ok := m.HoldSession(sid)
+	if !ok {
+		t.Fatal("second hold on valid session was rejected")
+	}
+	clk.add(31 * time.Minute)
+	if !m.IsValid(sid) {
+		t.Fatal("held session expired during a long task")
+	}
+	release()
+	clk.add(31 * time.Minute)
+	if !m.IsValid(sid) {
+		t.Fatal("session expired before the last hold was released")
+	}
+	releaseLast()
+	releaseLast() // releasing twice must not change the session twice
+	clk.add(29 * time.Minute)
+	if !m.IsValid(sid) {
+		t.Fatal("release did not start a fresh idle period")
+	}
+	clk.add(2 * time.Minute)
+	if m.IsValid(sid) {
+		t.Fatal("released session did not expire after its fresh idle period")
+	}
+}
+
+func TestHoldSessionIsReferenceCountedAndReleaseCannotAffectReplacement(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	m := newManager(t, clk)
+	oldSID, err := m.Pair(m.Token())
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseOld, ok := m.HoldSession(oldSID)
+	if !ok {
+		t.Fatal("old session was not held")
+	}
+	if _, err := m.ResetPairing(); err != nil {
+		t.Fatal(err)
+	}
+	newSID, err := m.Pair(m.Token())
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseNew, ok := m.HoldSession(newSID)
+	if !ok {
+		t.Fatal("new session was not held")
+	}
+	releaseOld()
+	if m.IsValid(oldSID) {
+		t.Fatal("old session was revived by its release")
+	}
+	clk.add(31 * time.Minute)
+	if !m.IsValid(newSID) {
+		t.Fatal("old release changed the new session's active hold")
+	}
+	releaseNew()
+}
+
+func TestHoldSessionRejectsExpiredSession(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	m := newManager(t, clk)
+	sid, err := m.Pair(m.Token())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk.add(31 * time.Minute)
+	if _, ok := m.HoldSession(sid); ok {
+		t.Fatal("expired session was held")
+	}
+	if m.IsValid(sid) {
+		t.Fatal("HoldSession revived an expired session")
+	}
+}
+
 func TestSessionFreedAfterIdleAllowsNewPair(t *testing.T) {
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	m := newManager(t, clk)

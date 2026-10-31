@@ -82,27 +82,66 @@ func TestCompactionKeepsLatestResultBeforeOldHistory(t *testing.T) {
 	t.Fatal("latest complete turn discarded")
 }
 
-func TestPlainReplyRequiresExplicitFinish(t *testing.T) {
-	for _, first := range []string{"已经完成", "无法完成"} {
-		srv := scriptedLLM(t, []string{textSSE(first), toolCallSSE("finish", toolFinish, `{"summary":"needs operator input","success":false}`)})
-		emit, events, _ := collectEvents()
-		a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "test"}), Executor: newFakeExec(), Emit: emit})
-		_ = a.Run(context.Background(), "deploy")
-		srv.Close()
-		var final *Event
-		for i, e := range *events {
-			if e.Type == EventFinal {
-				final = &(*events)[i]
-			}
-		}
-		if final == nil || final.Success || final.Text != "needs operator input" {
-			t.Fatalf("plain reply bypassed explicit finish: %+v", final)
-		}
+func TestPlainReplyWithoutToolUseFinishesAsReplyOnce(t *testing.T) {
+	srv := scriptedLLM(t, []string{textSSE("Hello there!")})
+	defer srv.Close()
+	emit, events, _ := collectEvents()
+	a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "test"}), Executor: newFakeExec(), Emit: emit})
+	if err := a.Run(context.Background(), "hello"); err != nil {
+		t.Fatalf("plain reply: %v", err)
+	}
+	final := lastFinal(events)
+	if final == nil || final.State != "reply" || final.Success || final.Text != "Hello there!" {
+		t.Fatalf("unexpected reply event: %+v", final)
 	}
 }
 
-func TestMissingFinishStopsAfterOneReminder(t *testing.T) {
-	srv := scriptedLLM(t, []string{textSSE("还没有完成"), textSSE("无法继续")})
+func TestPlainReplyAfterToolUseEndsNormally(t *testing.T) {
+	srv := scriptedLLM(t, []string{
+		toolCallSSE("check", toolRunCommand, `{"command":"echo checked"}`),
+		textSSE("检查结果已经整理好。"),
+	})
+	defer srv.Close()
+	emit, events, _ := collectEvents()
+	a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "test"}), Executor: newFakeExec(), Emit: emit})
+	if err := a.Run(context.Background(), "deploy"); err != nil {
+		t.Fatalf("plain reply after tool use: %v", err)
+	}
+	final := lastFinal(events)
+	if final == nil || final.State != "reply" || final.Success || final.Text != "检查结果已经整理好。" {
+		t.Fatalf("unexpected reply event: %+v", final)
+	}
+}
+
+func TestResumeWithToolHistoryMayEndWithPlainReply(t *testing.T) {
+	first := scriptedLLM(t, []string{toolCallSSE("read", toolReadFile, `{"path":"service.conf"}`)})
+	emit, _, _ := collectEvents()
+	initial := New(Config{LLM: llm.New(llm.Config{BaseURL: first.URL, APIKey: "test"}), Executor: newFakeExec(), MaxSteps: 1, Emit: emit})
+	if err := initial.Run(context.Background(), "deploy"); err == nil {
+		t.Fatal("first run should stop at its one-turn cap")
+	}
+	conversation := initial.Conversation()
+	first.Close()
+
+	continued := scriptedLLM(t, []string{textSSE("我检查过配置文件，继续前需要确认部署目标。")})
+	defer continued.Close()
+	_, resumedEvents, _ := collectEvents()
+	resumed := New(Config{LLM: llm.New(llm.Config{BaseURL: continued.URL, APIKey: "test"}), Executor: newFakeExec(), Resume: conversation, Emit: func(e Event) { (*resumedEvents) = append(*resumedEvents, e) }})
+	if err := resumed.Run(context.Background(), "continue"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	final := lastFinal(resumedEvents)
+	if final == nil || final.State != "reply" || final.Success || final.Text != "我检查过配置文件，继续前需要确认部署目标。" {
+		t.Fatalf("unexpected resumed reply event: %+v", final)
+	}
+}
+
+func TestRepeatedEmptyReplyStopsAfterOneReminder(t *testing.T) {
+	srv := scriptedLLM(t, []string{
+		toolCallSSE("check", toolRunCommand, `{"command":"echo checked"}`),
+		textSSE(""),
+		textSSE(""),
+	})
 	defer srv.Close()
 	emit, events, _ := collectEvents()
 	a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "test"}), Executor: newFakeExec(), Emit: emit})
@@ -110,9 +149,54 @@ func TestMissingFinishStopsAfterOneReminder(t *testing.T) {
 		t.Fatal("missing finish must not be success")
 	}
 	last := (*events)[len(*events)-1]
-	if last.Type != EventFinal || last.Success || !strings.Contains(last.Text, "无法继续") {
+	if last.Type != EventFinal || last.Success || !strings.Contains(last.Text, "没有返回有效答复") || strings.Contains(last.Text, "未调用 finish") {
 		t.Fatalf("unexpected final: %+v", last)
 	}
+}
+
+type helloFileExec struct{ *fakeExec }
+
+func (f helloFileExec) ReadFile(path string, offset, maxBytes int64) (ReadResult, error) {
+	f.reads = append(f.reads, path)
+	content := "print(\"Hello, World!\")\n"
+	return ReadResult{Content: content, Offset: offset, Size: int64(len(content)), NextOffset: int64(len(content)), EOF: true}, nil
+}
+
+func TestHelloPyReadThenReplyIsNotTaskFailure(t *testing.T) {
+	srv := scriptedLLM(t, []string{
+		toolCallSSE("read", toolReadFile, `{"path":"E:/WORK/test/hello.py"}`),
+		textSSE("hello.py contains a print call for Hello, World."),
+	})
+	defer srv.Close()
+	_, events, _ := collectEvents()
+	exec := helloFileExec{fakeExec: newFakeExec()}
+	a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "test"}), Executor: exec, Emit: func(e Event) { (*events) = append(*events, e) }})
+	if err := a.Run(context.Background(), "检查 E:\\WORK\\test\\hello.py"); err != nil {
+		t.Fatalf("read and explain: %v", err)
+	}
+	if len(exec.reads) != 1 || !strings.Contains(exec.reads[0], "hello.py") {
+		t.Fatalf("reads = %v", exec.reads)
+	}
+	final := lastFinal(events)
+	if final == nil || final.State != "reply" || final.Success || !strings.Contains(final.Text, "Hello, World") {
+		t.Fatalf("unexpected final reply: %+v", final)
+	}
+	wire, err := json.Marshal(*final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), `"success"`) {
+		t.Fatalf("neutral reply serialized success/failure: %s", wire)
+	}
+}
+
+func lastFinal(events *[]Event) *Event {
+	for i := len(*events) - 1; i >= 0; i-- {
+		if (*events)[i].Type == EventFinal {
+			return &(*events)[i]
+		}
+	}
+	return nil
 }
 
 type failingToolExecutor struct{ *fakeExec }

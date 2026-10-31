@@ -21,7 +21,7 @@ func eventJSON(t *testing.T, e Event) map[string]any {
 }
 
 func TestActivitySeparatesModelWaitFromExecution(t *testing.T) {
-	srv := scriptedLLM(t, []string{toolCallSSE("call-1", "run_command", `{"command":"echo hello"}`), toolCallSSE("finish-1", "finish", `{"summary":"done","success":true}`)})
+	srv := scriptedLLM(t, []string{toolCallSSE("call-1", "run_command", `{"command":"echo hello"}`), toolCallSSE("finish-1", "finish", `{"summary":"done","success":true,"verification_call_ids":["call-1"]}`)})
 	defer srv.Close()
 	emit, events, _ := collectEvents()
 	a := New(Config{LLM: llm.New(llm.Config{BaseURL: srv.URL, APIKey: "k", Model: "m"}), Executor: newFakeExec(), Emit: emit})

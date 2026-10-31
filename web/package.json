@@ -4,9 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/agent-state.test.ts tests/ui-style.test.ts tests/terminal-agent.test.ts tests/hardening.test.ts tests/auth-recovery.test.ts",
+    "test": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test tests/agent-state.test.ts tests/ui-style.test.ts tests/hardening.test.ts tests/auth-recovery.test.ts",
     "test:browser": "npm run build && node tests/workspace.browser.cjs && node tests/task-interactions.browser.cjs && node tests/auth-recovery.browser.cjs",
     "test:integration": "npm run build && node tests/run-real-backend.cjs",
+    "test:agent-interactions": "node tests/agent-interaction-regressions.browser.cjs",
+    "test:markdown": "node tests/markdown.browser.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
@@ -21,7 +23,9 @@
     "@xterm/xterm": "5.5.0",
     "lucide-react": "1.64.0",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@types/react": "18.3.12",

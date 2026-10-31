@@ -138,7 +138,7 @@ func TestCookieLifetimeDelegatesToServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	auth.SetCookie(rec, sid, m.IdleTimeout())
+	auth.SetCookie(rec, sid)
 	cookies := rec.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].MaxAge != 0 || !cookies[0].Expires.IsZero() {
 		t.Fatalf("cookie expires before active server session: %+v", cookies)
@@ -177,7 +177,7 @@ func TestAutomaticPongsDoNotRenewSession(t *testing.T) {
 	}
 }
 
-func TestSessionExpiryCancelsActiveTask(t *testing.T) {
+func TestLongSilentTaskHoldsSessionAndRevocationCancelsIt(t *testing.T) {
 	srv, cookie := shortSessionServer(t)
 	e := &heldExecutor{started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
 	defer close(e.release)
@@ -190,9 +190,22 @@ func TestSessionExpiryCancelsActiveTask(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("task did not start")
 	}
+	// The task emits no progress while running, but its session remains valid
+	// beyond the configured 300ms idle timeout.
+	time.Sleep(650 * time.Millisecond)
+	if !srv.auth.IsValid(cookie.Value) {
+		t.Fatal("silent task lost its held session")
+	}
 	select {
 	case <-e.cancelled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("expiry did not cancel active task")
+		t.Fatal("idle timeout cancelled a held task")
+	default:
+	}
+	// Explicit revocation remains authoritative while the hold is active.
+	srv.auth.Revoke()
+	select {
+	case <-e.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("revocation did not cancel active task")
 	}
 }

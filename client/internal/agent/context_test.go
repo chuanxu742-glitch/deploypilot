@@ -74,7 +74,7 @@ func TestContextCompactionBoundsRequestsAndKeepsPairs(t *testing.T) {
 		if requests <= 15 {
 			fmt.Fprint(w, toolCallSSE(fmt.Sprintf("c%d", requests), toolRunCommand, fmt.Sprintf(`{"command":"probe %d"}`, requests)))
 		} else {
-			fmt.Fprint(w, toolCallSSE("done", toolFinish, `{"summary":"verified","success":true}`))
+			fmt.Fprint(w, toolCallSSE("done", toolFinish, `{"summary":"verified","success":true,"verification_call_ids":["c15"]}`))
 		}
 	}))
 	defer provider.Close()

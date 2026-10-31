@@ -1,0 +1,31 @@
+.topbar .task-focus-control {
+  display: none;
+}
+
+@media (min-width: 821px) {
+  .topbar .task-focus-control {
+    display: inline-flex;
+    margin-left: auto;
+  }
+
+  .task-focus-control + .theme-control {
+    margin-left: 0;
+  }
+
+  .workspace[data-focus-task="true"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace[data-focus-task="true"] > .term-panel,
+  .workspace[data-focus-task="true"] > .splitter {
+    display: none;
+  }
+
+  .workspace[data-focus-task="true"] > .agent-panel {
+    grid-column: 1;
+    min-width: 0;
+    width: 100%;
+    max-width: 1040px;
+    justify-self: center;
+  }
+}
