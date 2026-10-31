@@ -50,6 +50,7 @@ type Event struct {
 	DurationMs     *int64    `json:"durationMs,omitempty"`
 	TimeoutSeconds int       `json:"timeoutSeconds,omitempty"`
 	LogPath        string    `json:"logPath,omitempty"`
+	RequestID      string    `json:"requestId,omitempty"`
 }
 
 // MarshalJSON preserves explicit tool/task outcomes and command exit code zero.
@@ -86,26 +87,48 @@ type Config struct {
 	// Resume continues an earlier conversation: Run's task is appended as a
 	// follow-up instruction instead of starting a fresh context.
 	Resume *Conversation
+	// ApplyPending commits accepted instructions at a complete model/tool-step
+	// boundary. The owner persists the returned checkpoint before acknowledging
+	// application, and must never invoke apply after cancellation.
+	ApplyPending func(apply func([]Instruction) *Conversation) error
+	// TryFinalize atomically arbitrates a normal final reply against new queued
+	// instructions. A false result keeps the run open for its next boundary.
+	TryFinalize func(Event) bool
+	// InitialInstructions precede the new instruction on an explicit continuation.
+	InitialInstructions []Instruction
+	// FollowUpID identifies the ordinary continuation accepted durably by the
+	// server, independently of viewer reconnects or model execution.
+	FollowUpID string
 }
 
 // Conversation is the model-visible state of a finished run. It can seed a
 // later run so the operator can continue a task (e.g. after a stop, an
 // optional step cap, or to supply information the model asked for).
 type Conversation struct {
-	window *contextWindow
+	window               *contextWindow
+	appliedSteers        map[string]bool
+	consumedInstructions map[string]bool
 }
 
 // Agent drives a tool-using model loop to accomplish a deployment task.
 type Agent struct {
-	llm          *llm.Client
-	exec         Executor
-	audit        Auditor
-	maxSteps     int
-	contextBytes int
-	emit         func(Event)
-	resume       *Conversation
-	window       *contextWindow
-	verification map[string]verificationRecord
+	llm                  *llm.Client
+	exec                 Executor
+	audit                Auditor
+	maxSteps             int
+	contextBytes         int
+	emit                 func(Event)
+	resume               *Conversation
+	window               *contextWindow
+	verification         map[string]verificationRecord
+	checks               map[string]bool // run_command/wait_for IDs this run; true once succeeded
+	appliedSteers        map[string]bool
+	applyPending         func(func([]Instruction) *Conversation) error
+	tryFinalize          func(Event) bool
+	finishDeferred       bool
+	initialInstructions  []Instruction
+	followUpID           string
+	consumedInstructions map[string]bool
 }
 
 // Turn-level retry limits. Interrupted streams executed no tools, and an
@@ -126,7 +149,7 @@ func (a *Agent) Conversation() *Conversation {
 	if a.window == nil {
 		return nil
 	}
-	return &Conversation{window: a.window}
+	return &Conversation{window: a.window, appliedSteers: a.appliedSteers, consumedInstructions: a.consumedInstructions}
 }
 
 // New creates an Agent, applying defaults.
@@ -153,7 +176,11 @@ func New(cfg Config) *Agent {
 			e.Timestamp = time.Now().UnixMilli()
 			cfg.Emit(e)
 		},
-		resume: cfg.Resume,
+		resume:              cfg.Resume,
+		applyPending:        cfg.ApplyPending,
+		tryFinalize:         cfg.TryFinalize,
+		initialInstructions: cfg.InitialInstructions,
+		followUpID:          cfg.FollowUpID,
 	}
 }
 
@@ -228,27 +255,48 @@ func (a *Agent) streamTurn(ctx context.Context, step int, window *contextWindow,
 
 // Run executes the task loop until the model finishes, an optional step cap is
 // reached, or ctx is cancelled.
-func (a *Agent) Run(ctx context.Context, task string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (a *Agent) Run(ctx context.Context, task string) (runErr error) {
+	// A stop can win at any point (model wait, a running tool, a step
+	// boundary). Report it once, whichever path returned.
+	defer func() {
+		if runErr != nil && errors.Is(ctx.Err(), context.Canceled) {
+			a.emit(Event{Type: EventStatus, Text: "已停止。"})
+		}
+	}()
+	a.verification, a.checks = nil, nil
 	a.audit.Append(AuditEntry{Kind: "task", Note: task})
 	var window *contextWindow
 	if a.resume != nil && a.resume.window != nil {
-		// Continue the earlier conversation; the machine context is already in it.
+		// Historical machine facts and successful checks are not current evidence.
 		window = a.resume.window
+		a.appliedSteers = a.resume.appliedSteers
+		a.consumedInstructions = a.resume.consumedInstructions
+		a.window = window
+		// The server already accepted this message. Preserve it even when stop
+		// wins before Run starts; this checkpoint makes no model/tool execution.
+		a.appendInstructions(a.initialInstructions)
 		window.addFollowUp(task)
+		if a.followUpID != "" {
+			a.appliedSteers[instructionKey(Instruction{RequestID: a.followUpID, Kind: "followup"})] = true
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		window.prefix[0].Content = systemPrompt
+		window.prefix[1].Content = "当前重新检查的机器环境：\n" + a.exec.MachineInfo(ctx)
 	} else {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		a.emit(Event{Type: EventActivity, State: "preparing", Text: "正在收集机器环境"})
 		info := a.exec.MachineInfo(ctx)
 		window = newContextWindow([]llm.Message{
 			{Role: llm.RoleSystem, Content: systemPrompt},
-			{Role: llm.RoleSystem, Content: "目标机器平台: " + runtime.GOOS + "/" + runtime.GOARCH + "\n目标机器环境信息:\n" + info},
+			{Role: llm.RoleSystem, Content: "目标机器平台: " + runtime.GOOS + "/" + runtime.GOARCH + "\n目标机器环境信息:\n" + info + "\n" + newSessionNote},
 			{Role: llm.RoleUser, Content: task},
 		})
 	}
 	a.window = window
-	a.verification = nil
 	tools := toolSet()
 	budget := a.contextBytes
 	nudged := false
@@ -259,9 +307,11 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 	for step := 1; a.maxSteps <= 0 || step <= a.maxSteps; step++ {
 		select {
 		case <-ctx.Done():
-			a.emit(Event{Type: EventStatus, Text: "已停止。"})
 			return ctx.Err()
 		default:
+		}
+		if err := a.applyInstructions(ctx); err != nil {
+			return err
 		}
 
 		res, err := a.streamTurn(ctx, step, window, tools, &budget)
@@ -283,7 +333,9 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 			content := strings.TrimSpace(res.Message.Content)
 			if content != "" {
 				window.turns = append(window.turns, turn)
-				a.emit(Event{Type: EventFinal, State: "reply", Text: content, Success: false})
+				if !a.finalize(Event{Type: EventFinal, State: "reply", Text: content, Success: false}) {
+					continue
+				}
 				a.audit.Append(AuditEntry{Kind: "final", Note: content})
 				return nil
 			}
@@ -303,6 +355,7 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 		// Record the turn whatever happens below, with every call answered, so
 		// the conversation stays valid if the operator continues it later.
 		finished := false
+		a.finishDeferred = false
 		repeated := false
 		for _, tc := range res.Message.ToolCalls {
 			if ctx.Err() != nil || finished {
@@ -320,7 +373,7 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 			}
 			turn = append(turn, toolMsg)
 			finished = done
-			if repeated {
+			if repeated || a.finishDeferred {
 				break
 			}
 		}
@@ -420,6 +473,13 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 			a.audit.Append(AuditEntry{Kind: "blocked", Command: args.Command, Note: reason})
 			return false, failure("BLOCKED: " + reason + ". Choose a safer approach.")
 		}
+		if runtime.GOOS == "windows" {
+			if blocked, reason := CheckPowerShell(args.Command); blocked {
+				emit(Event{Type: EventToolCall, Tool: name, Command: args.Command, Step: step})
+				a.audit.Append(AuditEntry{Kind: "blocked", Command: args.Command, Note: reason})
+				return false, failure("NOT RUN: " + reason + ".")
+			}
+		}
 
 		timeoutSeconds := args.TimeoutSeconds
 		if timeoutSeconds <= 0 {
@@ -430,6 +490,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		}
 		timeout := time.Duration(args.TimeoutSeconds) * time.Second
 		a.verification = nil
+		a.noteCheck(tc.ID)
 		exit, out, err := a.exec.Run(ctx, args.Command, timeout, func(chunk string) {
 			emit(Event{Type: EventOutput, Text: chunk})
 		})
@@ -437,6 +498,20 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		failureState = toolTerminationState(err)
 		failureLogPath = commandOutputLogPath(out)
 		emit(Event{Type: EventToolDone, Tool: name, ExitCode: exit, Success: err == nil && exit == 0, Step: step, State: failureState, LogPath: failureLogPath})
+		// The terminal persists across commands and tasks, so a relative path
+		// resolves against wherever the last command left it. Tell the model.
+		withCwd := func(m llm.Message) llm.Message {
+			cwd := a.workingDirectory()
+			if cwd == "" {
+				return m
+			}
+			if i := strings.Index(m.Content, "\n"); i >= 0 {
+				m.Content = m.Content[:i] + "\ncwd: " + cwd + m.Content[i:]
+			} else {
+				m.Content += "\ncwd: " + cwd
+			}
+			return m
+		}
 		if err != nil {
 			diagnostic := fmt.Sprintf("exit=%d error=%s\noutput:\n%s", exit, err.Error(), out)
 			if failureState != "" {
@@ -448,15 +523,15 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 				// Keep the original error and output available to the model without
 				// exposing implementation errors as the operator's status label.
 				message.Content = result("error: " + diagnostic).Content
-				return false, message
+				return false, withCwd(message)
 			}
-			return false, failure(diagnostic)
+			return false, withCwd(failure(diagnostic))
 		}
 		if exit != 0 {
-			return false, failure(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out))
+			return false, withCwd(failure(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out)))
 		}
 		a.rememberVerification(tc.ID, args.Command, fmt.Sprintf("exit=%d\n%s", exit, out))
-		return false, result(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out))
+		return false, withCwd(result(fmt.Sprintf("exit=%d\noutput:\n%s", exit, out)))
 
 	case toolWaitFor:
 		var args waitForArgs
@@ -468,6 +543,7 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		if err := announce(Event{Type: EventToolCall, Tool: name, Command: command}); err != nil {
 			return false, failure(err.Error())
 		}
+		a.noteCheck(tc.ID)
 		out, err := waitFor(ctx, a.exec, args, func(elapsed time.Duration, observation string) {
 			emit(Event{Type: EventActivity, State: "waiting", Tool: name, Text: waitForActivityText(args, elapsed, observation)})
 		})
@@ -568,13 +644,25 @@ func (a *Agent) runTool(ctx context.Context, step int, tc llm.ToolCall) (done bo
 		if args.Outcome == "needs_input" {
 			state = "needs_input"
 		}
-		emit(Event{Type: EventFinal, State: state, Text: summary, Success: args.Success})
+		if !a.finalize(Event{Type: EventFinal, State: state, Text: summary, Success: args.Success}) {
+			a.finishDeferred = true
+			return false, result("not finished: new operator instructions are pending; apply them before checking the updated task again")
+		}
 		a.audit.Append(AuditEntry{Kind: "final", Note: summary})
 		return true, result("acknowledged")
 
 	default:
 		return false, failure("unknown tool " + name)
 	}
+}
+
+// workingDirectory is the terminal's current directory when the executor
+// keeps one (the shared terminal does), otherwise "".
+func (a *Agent) workingDirectory() string {
+	if state, ok := a.exec.(interface{ WorkingDirectory() string }); ok {
+		return state.WorkingDirectory()
+	}
+	return ""
 }
 
 func toolTerminationState(err error) string {
@@ -600,6 +688,11 @@ func commandOutputLogPath(output string) string {
 	return path
 }
 
+// newSessionNote opens a fresh conversation. The persistent terminal keeps
+// the directory of whatever ran before, and a model that finds a server.py
+// there tends to treat it as the thing to deploy.
+const newSessionNote = "这是一个新会话，没有之前的对话。终端的当前目录可能是更早的其他任务留下的，其中的文件、服务和进程不是本任务的对象，除非任务明确指向它们。"
+
 // emptyReplyNudge requests a useful response after an empty model turn.
 const emptyReplyNudge = "本轮没有有效答复；若还需操作请继续使用工具，否则给出自然语言结果。若要报告部署成功，必须先完成真实检查，再调用 finish(success=true) 并引用验证证据；任务确实失败时调用 finish(success=false)；如果缺少操作员才能提供的信息，调用 finish(outcome=needs_input, success=false) 并提出具体问题。"
 
@@ -613,7 +706,7 @@ var systemPrompt = strings.TrimSpace(`
 - 遇到报错先读取日志和错误输出，定位根因后再修复，不要盲目重试。
 - 问候和普通问答可以直接自然语言回答。若有助于完成请求，可以先检查相关文件或环境，再用自然语言解释结果；不必仅为结束任务而调用 finish。
 - 只有在明确报告部署成功且已完成真实检查时，才调用 finish(success:true) 总结并提供验证证据；任务真实失败时可调用 finish(success:false)。缺少只有操作员能提供的信息时，调用 finish(outcome:"needs_input", success:false)，在 summary 里提出具体问题；这表示等待补充信息，不表示任务失败。
-- 成功完成前执行真实检查（服务接口、健康状态、预期文件等），finish(success=true) 的 verification_call_ids 必须引用 run_command 或 wait_for 返回的 call_id。新的命令或文件修改会使旧验证失效；请把最终检查放在最后。不能只填写一段声称成功的文字。
+- 成功完成前执行真实检查（服务接口、健康状态、预期文件等），finish(success=true) 的 verification_call_ids 必须引用 run_command 或 wait_for 返回的 call_id。只有最近一次 run_command（及其后的 wait_for）算当前证据，任何新命令或文件修改都会使更早的验证失效；请把所有最终检查合并到 finish 前的一条 run_command 中，只引用它。不能只填写一段声称成功的文字。
 - 同一调用连续得到相同结果时换方法，优先读完整日志；不要重复运行无变化的命令。第三次会收到提醒，第四次任务会暂停。
 
 文件操作:
@@ -628,14 +721,17 @@ var systemPrompt = strings.TrimSpace(`
 - 优先使用非交互式命令（加 -y、DEBIAN_FRONTEND=noninteractive 等），避免卡在交互提示。
 
 执行环境（重要）:
-- 命令在操作员可见的同一个持久终端里依次执行：cd 和 export 的环境变量会保留到后续命令。不要在命令里用 exit 退出 shell，也不要单独执行 set -e；需要遇错即停时用 && 串联，或包成 bash -c '...'。
+- 命令在操作员可见的同一个持久终端里依次执行，目录和环境变量会保留。Linux 用 cd/export；需要遇错即停时可以用 &&，或包成 bash -c '...'。不要在命令里用 exit 退出 shell，也不要单独执行 set -e。
+- Windows 使用 Windows PowerShell 5.1，不支持 &&、||、export 或 bash 语法。用 Set-Location/$env:NAME 修改目录和环境；相关命令分开调用，或用分号并在失败时通过 if ($LASTEXITCODE -ne 0) / -ErrorAction Stop 中止当前操作。Start-Process 的 stdout 和 stderr 必须重定向到不同文件，使用 -WindowStyle Hidden；在需要读取 PID 时用 -PassThru。
+- Windows 双引号字符串中，变量后紧跟冒号时使用 ${name} 或格式运算符（如 '{0}: exists' -f $name），不要写 "$name: exists"；后者会被解析为作用域/驱动器变量并报语法错误。
 - 你无法回答任何交互提示：没有人能替你输入密码、y/n 或编辑器内容。sudo 用 sudo -n（环境信息里写明了是否有免密 sudo）；不要打开 vim/less/top 等全屏程序，查看内容用 cat/head/tail/grep，查进程用 ps。
 - 长期运行的服务（vLLM、Ollama、Web 服务等）不要放在前台运行，否则命令会一直等到超时并被中断、服务随之被杀。用 nohup <命令> > /tmp/<名称>.log 2>&1 & 在后台启动（能用 systemd 或 docker -d 更好），再用 sleep、tail 日志和 curl 轮询确认就绪。Windows 用 Start-Process 并重定向日志。
 - 预计较慢的命令（大模型下载、pip 安装大包、构建镜像）设置 timeout_seconds（最长 3600），或改为后台执行后轮询进度。
 - 非零退出码不一定是故障：grep 没匹配、which/test 未找到都会返回 1，根据输出判断。
 - 等待网址可访问、日志出现某句话或进程退出时用 wait_for，一次调用在程序内等待，不要反复 sleep/curl 占用模型轮次。
 - Windows 网络探测请显式使用 curl.exe --connect-timeout 10 --max-time 20，或 Invoke-WebRequest -Uri <网址> -Method Head -UseBasicParsing -TimeoutSec 20。Windows PowerShell 中 curl 可能是 Invoke-WebRequest 别名，不要使用 curl -I 这类会触发缺少必填参数交互的写法；网络探测应设置短时限。
-- 已开始任务缺少操作员才能提供的信息（密码、令牌、版本选择等）时，调用 finish(outcome:"needs_input", success:false)，在 summary 里写清具体问题。这表示等待补充信息，不表示任务失败；操作员可以继续该任务并补充信息，已有进展会保留。
+- 部署对象（哪个项目或目录）或部署位置（"测试服务器"之类的另一台机器、地址、域名）在任务和环境中无法确定时，不要拿当前目录、旧任务留下的文件或已在运行的服务代替，也不要据此报告成功；调用 finish(outcome:"needs_input", success:false) 问清楚。
+- 缺少操作员才能提供的信息（密码、令牌、版本选择等）而不能继续当前任务时，必须调用 finish(outcome:"needs_input", success:false)，在 summary 里写清具体问题；不要只用普通自然回复提出问题后结束。这样界面才会显示等待补充信息，操作员继续该任务后已有进展会保留。普通问答或已经回答完毕的说明仍可自然回复结束。
 
 部署知识:
 - ModelScope 下载模型: 用 pip install modelscope，然后 modelscope download --model <id> --local_dir <dir>；国内网络通常可直连 modelscope.cn。HuggingFace 不通时可设 HF_ENDPOINT=https://hf-mirror.com。

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,9 @@ func TestWaitForReturnsExplicitTimeout(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "timed out") || time.Since(started) > 3*time.Second {
 		t.Fatalf("expected bounded timeout, got %v after %s", err, time.Since(started))
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || toolTerminationState(err) != "timeout" {
+		t.Fatalf("timeout must retain its cause and UI state, got %v (%q)", err, toolTerminationState(err))
 	}
 }
 

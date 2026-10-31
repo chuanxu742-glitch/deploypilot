@@ -273,6 +273,9 @@ func SetCookie(w http.ResponseWriter, sid string, _ time.Duration) {
 // IdleTimeout exposes the configured idle timeout.
 func (m *Manager) IdleTimeout() time.Duration { return m.idleTimeout }
 
+// TokenTTL is how long a freshly minted pairing link stays valid.
+func (m *Manager) TokenTTL() time.Duration { return m.tokenTTL }
+
 // Middleware rejects requests that do not carry a valid session cookie.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -70,6 +70,7 @@ func waitFor(ctx context.Context, executor Executor, args waitForArgs, progress 
 	var client *http.Client
 	var logOffset int64
 	var logCarry string
+	var logFileInfo os.FileInfo
 	logStarted := false
 	for {
 		var done bool
@@ -79,7 +80,7 @@ func waitFor(ctx context.Context, executor Executor, args waitForArgs, progress 
 		case "url":
 			done, observation, err = pollURL(waitCtx, client, args.Target)
 		case "log":
-			done, observation, logOffset, logCarry, logStarted, err = pollLog(executor, args.Target, args.Contains, logOffset, logCarry, logStarted)
+			done, observation, logOffset, logCarry, logStarted, err = pollLog(executor, args.Target, args.Contains, logOffset, logCarry, logStarted, &logFileInfo)
 		case "process":
 			done, observation, err = pollProcess(waitCtx, args.Target)
 		}
@@ -170,7 +171,7 @@ func waitContextError(parent, waitCtx context.Context, timeout time.Duration) er
 		return fmt.Errorf("wait_for cancelled: %w", parent.Err())
 	}
 	if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("wait_for timed out after %s", timeout)
+		return fmt.Errorf("wait_for timed out after %s: %w", timeout, context.DeadlineExceeded)
 	}
 	return fmt.Errorf("wait_for cancelled: %w", waitCtx.Err())
 }
@@ -203,7 +204,17 @@ func pollURL(ctx context.Context, client *http.Client, target string) (bool, str
 	return resp.StatusCode >= 200 && resp.StatusCode < 400, obs, nil
 }
 
-func pollLog(executor Executor, path, contains string, offset int64, carry string, started bool) (bool, string, int64, string, bool, error) {
+func pollLog(executor Executor, path, contains string, offset int64, carry string, started bool, identity ...*os.FileInfo) (bool, string, int64, string, bool, error) {
+	// Native reads carry handle-derived identity. Executors without this optional
+	// metadata keep their existing behavior; no path-based stat is substituted.
+	changedFile := func(info os.FileInfo) bool {
+		if len(identity) == 0 || identity[0] == nil || info == nil {
+			return false
+		}
+		previous := *identity[0]
+		*identity[0] = info
+		return previous != nil && !os.SameFile(previous, info)
+	}
 	readBudget := int64(maxLogScanPerPoll)
 	if !started {
 		// Start at the recent tail so a large historical log cannot turn the
@@ -219,6 +230,7 @@ func pollLog(executor Executor, path, contains string, offset int64, carry strin
 		if first.Size > readBudget {
 			offset = first.Size - readBudget
 		}
+		changedFile(first.FileInfo)
 		started = true
 	} else {
 		// If the file was truncated or rotated, restart from its beginning.
@@ -229,7 +241,7 @@ func pollLog(executor Executor, path, contains string, offset int64, carry strin
 			}
 			return false, "", offset, carry, started, err
 		}
-		if info.Size < offset {
+		if changedFile(info.FileInfo) || info.Size < offset {
 			offset, carry = 0, ""
 		}
 	}
@@ -241,6 +253,11 @@ func pollLog(executor Executor, path, contains string, offset int64, carry strin
 				return false, "log file not present yet", offset, carry, started, nil
 			}
 			return false, "", offset, carry, started, err
+		}
+		// A rotation can occur after the metadata probe or between pages. Do not
+		// match text at an offset or against a carry from a different file.
+		if changedFile(page.FileInfo) {
+			return false, "log file changed; restarting from beginning", 0, "", started, nil
 		}
 		if strings.Contains(carry+page.Content, contains) {
 			return true, fmt.Sprintf("log %s contains %q", path, contains), page.NextOffset, "", started, nil

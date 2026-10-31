@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -91,6 +93,8 @@ type sharedShell struct {
 	closeOnce     sync.Once
 	persistTimer  *time.Timer
 	readyPath     string
+	restarted     atomic.Bool // replaced a shell that ended; see sharedTerminal
+	cols          atomic.Int32
 	readyEnabled  bool
 	writeSnapshot func(string, []byte) error
 }
@@ -120,7 +124,7 @@ func newSharedShell(dir string) (*sharedShell, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	cfg := pty.Config{Rows: 24, Cols: 100}
+	cfg := pty.Config{Rows: 24, Cols: defaultShellCols}
 	if runtime.GOOS == "linux" {
 		cfg.Shell = "/bin/bash"
 	}
@@ -129,6 +133,7 @@ func newSharedShell(dir string) (*sharedShell, error) {
 		return nil, err
 	}
 	shell.session = session
+	shell.cols.Store(defaultShellCols)
 	restoreCwd := shell.cwd
 	go shell.read()
 	shell.readyPath = filepath.Join(dir, "shell-ready")
@@ -139,7 +144,11 @@ func newSharedShell(dir string) (*sharedShell, error) {
 	// ready-file used to detect that the shell is back at a prompt.
 	bootstrap := "export PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER= DEBIAN_FRONTEND=noninteractive; export PROMPT_COMMAND=" + shellQuote("printf '%s' \"$PWD\" > "+shellQuote(shell.readyPath))
 	if runtime.GOOS == "windows" {
-		bootstrap = "function global:prompt { [IO.File]::WriteAllText(" + psQuote(shell.readyPath) + ",(Get-Location).Path); 'PS '+(Get-Location).Path+'> ' }"
+		// PSReadLine caches the input origin. A long cwd on the input line can
+		// leave that column outside the buffer when the browser narrows the PTY.
+		// Keep the complete cwd above a short input prefix, retaining line editing.
+		bootstrap = "function global:prompt { [IO.File]::WriteAllText(" + psQuote(shell.readyPath) + ",(Get-Location).Path); 'PS '+(Get-Location).Path+[Environment]::NewLine+'> ' }"
+		bootstrap += "; if (Get-Module PSReadLine) { Set-PSReadLineOption -PromptText '> ' -ExtraPromptLineCount 1 }"
 		bootstrap += "; function global:dp { . ([ScriptBlock]::Create([IO.File]::ReadAllText(" + psQuote(filepath.Join(dir, "command.ps1")) + "))) }"
 	}
 	initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -317,7 +326,7 @@ func atomicPrivateWrite(path string, data []byte) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Rename(name, path)
+	return replaceFile(name, path)
 }
 
 // shellFeed is one viewer's live output. When the viewer cannot keep up with a
@@ -382,7 +391,53 @@ func (s *sharedShell) Write(data []byte) (int, error) {
 		return s.session.Write(data)
 	}
 }
-func (s *sharedShell) Resize(rows, cols uint16) error { return s.session.Resize(rows, cols) }
+func (s *sharedShell) Resize(rows, cols uint16) error {
+	if err := s.session.Resize(rows, cols); err != nil {
+		return err
+	}
+	s.cols.Store(int32(cols))
+	return nil
+}
+
+const defaultShellCols = 100
+
+// commandLabel is the one-line echo of an Agent command in the terminal. A
+// label that wraps makes PSReadLine redraw the input, which prints the
+// command two or three times; the full command is in the task timeline.
+func commandLabel(command string, cols int) string {
+	label := strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return ' '
+		}
+		return r
+	}, command)
+	// "> . dp # " plus "..." and one spare cell.
+	limit := min(180, max(16, cols-len("> . dp # ")-4))
+	width, cut := 0, -1
+	for i, r := range label {
+		w := 1
+		if r >= 0x1100 && runeIsWide(r) {
+			w = 2
+		}
+		if width+w > limit {
+			cut = i
+			break
+		}
+		width += w
+	}
+	if cut >= 0 {
+		label = label[:cut] + "..."
+	}
+	return label
+}
+
+// runeIsWide covers the East Asian ranges a terminal draws two cells wide.
+func runeIsWide(r rune) bool {
+	return (r >= 0x1100 && r <= 0x115F) || (r >= 0x2E80 && r <= 0xA4CF) ||
+		(r >= 0xAC00 && r <= 0xD7A3) || (r >= 0xF900 && r <= 0xFAFF) ||
+		(r >= 0xFE30 && r <= 0xFE4F) || (r >= 0xFF00 && r <= 0xFF60) ||
+		(r >= 0xFFE0 && r <= 0xFFE6) || (r >= 0x20000 && r <= 0x3FFFD)
+}
 func (s *sharedShell) Cwd() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -449,16 +504,21 @@ func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(str
 	}
 	id := hex.EncodeToString(token)
 	resultPath := filepath.Join(s.dir, "result-"+id+".json")
+	outputPath := resultPath + ".output"
+	if runtime.GOOS == "windows" {
+		if err := os.WriteFile(outputPath, nil, 0600); err != nil {
+			return -1, "", err
+		}
+		defer os.Remove(outputPath)
+	}
 	scriptPath := filepath.Join(s.dir, "run-"+id)
 	defer os.Remove(resultPath)
 	defer os.Remove(scriptPath)
 	encoded := base64.StdEncoding.EncodeToString([]byte(command))
+	// OSC carries completion without putting the nonce in the terminal screen.
+	// A visible nonce remains in ConPTY's screen buffer and leaks again on a
+	// later resize, after the active command's display filter has been cleared.
 	marker := "\x1b]777;" + id + "\x07"
-	if runtime.GOOS == "windows" {
-		// ConPTY consumes private OSC sequences. This nonce is printed only
-		// by the script; read strips it before forwarding terminal output.
-		marker = "DP_OUTPUT_DONE_" + id
-	}
 	var script, input string
 	if runtime.GOOS == "windows" {
 		scriptPath += ".ps1"
@@ -467,35 +527,43 @@ func (s *sharedShell) Run(ctx context.Context, command string, onOutput func(str
 		}
 		defer os.Remove(scriptPath)
 		code := "__dp_code_" + id
-		script = fmt.Sprintf(`$%s=@{code=0; truncated=$false; output=[Text.StringBuilder]::new()}
+		// Formatting records form one stream: formatting each object separately
+		// breaks Format-Table's state. Native stderr is diagnostic text; its
+		// exit status still comes from LASTEXITCODE, unlike a PowerShell error.
+		// Each native stderr line is emitted as its original text (TargetObject):
+		// on Windows PowerShell 5.1 an empty line's ToString() is the exception
+		// type name "System.Management.Automation.RemoteException".
+		script = fmt.Sprintf(`$%[1]s=@{code=0; truncated=$false; output=[Text.StringBuilder]::new(); stream=$null}
 $global:LASTEXITCODE=0
 try {
- . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s')))) 2>&1 | ForEach-Object {
-  if ($_ -is [System.Management.Automation.ErrorRecord]) { $%s.code=1 }
-  [void]$%s.output.Append(($_ | Out-String))
-  if ($%s.output.Length -gt 16384) { [void]$%s.output.Remove(8192,$%s.output.Length-16384); $%s.truncated=$true }
+ $%[1]s.stream=[IO.StreamWriter]::new(%[5]s,$false,[Text.UTF8Encoding]::new($false))
+ $%[1]s.stream.AutoFlush=$true
+ . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%[2]s')))) 2>&1 | ForEach-Object {
+  if ($_ -is [System.Management.Automation.ErrorRecord]) {
+   if ($_.FullyQualifiedErrorId -like 'NativeCommandError*') { if ($_.TargetObject -is [string]) { $_.TargetObject } else { $_.ToString() } } else { $%[1]s.code=1; $_ }
+  } else { $_ }
+ } | Out-String -Stream | ForEach-Object {
+  [void]$%[1]s.output.AppendLine($_)
+  if ($%[1]s.output.Length -gt 16384) { [void]$%[1]s.output.Remove(8192,$%[1]s.output.Length-16384); $%[1]s.truncated=$true }
+  $%[1]s.stream.WriteLine($_)
   $_
  } | Out-Default
- if ($LASTEXITCODE -ne 0) { $%s.code=$LASTEXITCODE }
-} catch { $%s.code=1; [void]$%s.output.Append($_.ToString()); Write-Output $_ } finally {
- [IO.File]::WriteAllText(%s,(@{code=$%s.code;cwd=(Get-Location).Path;output=$%s.output.ToString();truncated=$%s.truncated}|ConvertTo-Json -Compress))
- Remove-Variable %s -ErrorAction SilentlyContinue
- [Console]::Write(%s)
+ if ($LASTEXITCODE -ne 0) { $%[1]s.code=$LASTEXITCODE }
+} catch {
+ $%[1]s.code=1
+ [void]$%[1]s.output.AppendLine($_.ToString())
+ try { if ($null -ne $%[1]s.stream) { $%[1]s.stream.WriteLine($_.ToString()) } } catch {}
+ Write-Output $_
+} finally {
+ if ($null -ne $%[1]s.stream) { try { $%[1]s.stream.Dispose() } catch { $%[1]s.code=1; [void]$%[1]s.output.AppendLine($_.ToString()) } }
+ [IO.File]::WriteAllText(%[3]s,(@{code=$%[1]s.code;cwd=(Get-Location).Path;output=$%[1]s.output.ToString();truncated=$%[1]s.truncated}|ConvertTo-Json -Compress))
+ Remove-Variable %[1]s -ErrorAction SilentlyContinue
+ [Console]::Write(%[4]s)
 }
-`, code, encoded, code, code, code, code, code, code, code, code, code, psQuote(resultPath), code, code, code, code, psQuote(marker))
+`, code, encoded, psQuote(resultPath), psQuote(marker), psQuote(outputPath))
 		input = ". ([ScriptBlock]::Create([IO.File]::ReadAllText(" + psQuote(scriptPath) + ")))\r"
 		if s.readyEnabled {
-			label := strings.Map(func(r rune) rune {
-				if r < 32 || r == 127 {
-					return ' '
-				}
-				return r
-			}, command)
-			labelRunes := []rune(label)
-			if len(labelRunes) > 180 {
-				label = string(labelRunes[:180]) + "..."
-			}
-			input = ". dp # " + label + "\r"
+			input = ". dp # " + commandLabel(command, int(s.cols.Load())) + "\r"
 		}
 	} else {
 		code := "__dp_code_" + id
@@ -537,7 +605,27 @@ try {
 		defer captureMu.Unlock()
 		return terminalEscapes.ReplaceAllString(captured.String(), "")
 	}
+	// ConPTY redraws and command echoes are not model-visible output. Windows
+	// publishes the formatter's UTF-8 text through a private stream instead.
+	var outputOffset int64
+	streamOutput := func() (int64, error) {
+		if runtime.GOOS != "windows" || onOutput == nil {
+			return 0, nil
+		}
+		n, err := readWindowsCommandOutput(outputPath, outputOffset, onOutput)
+		outputOffset += n
+		return n, err
+	}
 	defer func() {
+		for {
+			n, err := streamOutput()
+			if err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("read command output stream: %w", err))
+			}
+			if n == 0 || err != nil {
+				break
+			}
+		}
 		s.mu.Lock()
 		s.output = nil
 		if s.displayTail != "" {
@@ -562,6 +650,11 @@ try {
 		}
 		captureMu.Unlock()
 	}()
+	children, err := trackCommandChildren(s.session)
+	if err != nil {
+		return -1, "", err
+	}
+	defer func() { runErr = errors.Join(runErr, children.Close()) }()
 	if _, err := s.Write([]byte(input)); err != nil {
 		return -1, "", err
 	}
@@ -577,7 +670,7 @@ try {
 			ctxDone = nil
 			if cancelled == nil {
 				cancelled = ctx.Err()
-				_, _ = s.Write([]byte{3})
+				cancelled = errors.Join(cancelled, children.Cancel(func() { _, _ = s.Write([]byte{3}) }))
 				grace = time.After(2 * time.Second)
 			}
 		case <-grace:
@@ -591,6 +684,7 @@ try {
 			outputComplete = true
 			completed = nil
 		case <-ticker.C:
+			_, _ = streamOutput()
 			if !outputComplete && cancelled == nil {
 				continue
 			}
@@ -633,9 +727,6 @@ try {
 					middle := len(chars) / 2
 					output = string(chars[:middle]) + "\n[earlier output truncated]\n" + string(chars[middle:])
 				}
-				if onOutput != nil && output != "" {
-					onOutput(output)
-				}
 			}
 			if cancelled != nil {
 				return -1, output, fmt.Errorf("command cancelled: %w", cancelled)
@@ -643,4 +734,29 @@ try {
 			return result.Code, output, nil
 		}
 	}
+}
+
+// readWindowsCommandOutput reads a bounded page from the formatter's side
+// channel. Leave an incomplete UTF-8 suffix for the next poll rather than
+// sending replacement characters when a writer/read boundary splits a rune.
+func readWindowsCommandOutput(path string, offset int64, emit func(string)) (int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return 0, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 256*1024))
+	if err != nil {
+		return 0, err
+	}
+	for len(data) > 0 && !utf8.Valid(data) {
+		data = data[:len(data)-1]
+	}
+	if len(data) > 0 {
+		emit(string(data))
+	}
+	return int64(len(data)), nil
 }

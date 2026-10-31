@@ -6,7 +6,10 @@ const path = require("node:path");
 (async () => {
   const url = process.env.DP_TEST_URL;
   const token = process.env.DP_TEST_TOKEN;
-  assert.ok(url && token, "run through TestConversationFrontendBrowserIntegration");
+  assert.ok(
+    url && token,
+    "run through TestConversationFrontendBrowserIntegration",
+  );
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   try {
     const context = await browser.newContext({
@@ -21,7 +24,9 @@ const path = require("node:path");
       const mark = page.locator("img.brand-mark");
       await mark.waitFor();
       assert.equal(
-        await mark.evaluate((image) => image.complete && image.naturalWidth > 0),
+        await mark.evaluate(
+          (image) => image.complete && image.naturalWidth > 0,
+        ),
         true,
         "brand mark image must load",
       );
@@ -38,6 +43,11 @@ const path = require("node:path");
             )
           : null;
       }, title);
+    const startNewSession = async () => {
+      const expand = page.getByRole("button", { name: "展开会话导航" });
+      if (await expand.count()) await expand.click();
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
+    };
 
     await page.goto(`${url}/#t=${token}`);
     await page.locator("#task-input").waitFor();
@@ -55,7 +65,9 @@ const path = require("node:path");
       const tasks = await fetch("/api/tasks").then((response) =>
         response.json(),
       );
-      return tasks.some((task) => task.title === "hi" && task.phase === "finished");
+      return tasks.some(
+        (task) => task.title === "hi" && task.phase === "finished",
+      );
     });
     await page
       .getByRole("button", { name: "停止任务", exact: true })
@@ -65,7 +77,7 @@ const path = require("node:path");
     assert.equal(await (await fetch(`${url}/test/provider-count`)).text(), "1");
 
     // Start a deployment conversation; the provider asks for concrete input.
-    await page.getByRole("button", { name: "新建任务", exact: true }).click();
+    await startNewSession();
     await page.locator("#task-input").fill("部署服务");
     await page.getByRole("button", { name: "执行任务", exact: true }).click();
     const needsInput = page
@@ -104,7 +116,7 @@ const path = require("node:path");
       .waitFor();
     assert.equal(
       await page.locator("#task-input").getAttribute("placeholder"),
-      "继续当前任务（点「新建任务」开始新会话）",
+      "继续当前任务（从会话栏新建独立会话）",
       "needs_input conversation must remain resumable after reload",
     );
     const restored = await getTask("部署服务");
@@ -118,33 +130,43 @@ const path = require("node:path");
       .locator(".tl-final.tl-error")
       .filter({ hasText: "模拟部署失败：测试服务器无法访问。" })
       .waitFor();
-    await page.waitForFunction(async ({ id, oldRequestId, text }) => {
-      const record = await fetch(`/api/tasks/${id}`).then((response) =>
-        response.json(),
-      );
-      return (
-        record.phase === "finished" &&
-        record.requestId !== oldRequestId &&
-        record.events.some((event) => event.type === "user" && event.text === text) &&
-        record.events.some(
-          (event) =>
-            event.type === "final" &&
-            event.success === false &&
-            event.state !== "needs_input",
-        )
-      );
-    }, { id: restored.id, oldRequestId: restored.requestId, text: followup });
+    await page.waitForFunction(
+      async ({ id, oldRequestId, text }) => {
+        const record = await fetch(`/api/tasks/${id}`).then((response) =>
+          response.json(),
+        );
+        return (
+          record.phase === "finished" &&
+          record.requestId !== oldRequestId &&
+          record.events.some(
+            (event) => event.type === "user" && event.text === text,
+          ) &&
+          record.events.some(
+            (event) =>
+              event.type === "final" &&
+              event.success === false &&
+              event.state !== "needs_input",
+          )
+        );
+      },
+      { id: restored.id, oldRequestId: restored.requestId, text: followup },
+    );
     await page
       .getByRole("button", { name: "停止任务", exact: true })
       .waitFor({ state: "detached" });
     assert.equal(
-      await page.locator(".final-card").filter({ hasText: "任务未完成" }).count(),
+      await page
+        .locator(".final-card")
+        .filter({ hasText: "任务未完成" })
+        .count(),
       1,
     );
     assert.equal(await (await fetch(`${url}/test/provider-count`)).text(), "3");
     await page.locator("#task-input").fill("检查任务已释放");
     assert.equal(
-      await page.getByRole("button", { name: "执行任务", exact: true }).isEnabled(),
+      await page
+        .getByRole("button", { name: "执行任务", exact: true })
+        .isEnabled(),
       true,
     );
     assert.deepEqual(errors, []);
@@ -166,12 +188,14 @@ const path = require("node:path");
 
     // Read a real temporary fixture file, then let the model end naturally
     // with a useful reply instead of an explicit finish tool call.
-    await page.getByRole("button", { name: "新建任务", exact: true }).click();
+    await startNewSession();
     await page.locator("#task-input").fill("检查hello.py");
     await page.getByRole("button", { name: "执行任务", exact: true }).click();
     await page
       .locator(".assistant-message")
-      .filter({ hasText: '没有明显问题，hello.py 中是 print("Hello, World!")。' })
+      .filter({
+        hasText: '没有明显问题，hello.py 中是 print("Hello, World!")。',
+      })
       .waitFor();
     await page.waitForFunction(async () => {
       const summaries = await fetch("/api/tasks").then((response) =>
@@ -183,7 +207,9 @@ const path = require("node:path");
         response.json(),
       );
       return (
-        record.events.some((event) => event.type === "final" && event.state === "reply") &&
+        record.events.some(
+          (event) => event.type === "final" && event.state === "reply",
+        ) &&
         record.events.some(
           (event) =>
             event.type === "tool_call" &&
@@ -191,7 +217,10 @@ const path = require("node:path");
             event.path?.endsWith("hello.py"),
         ) &&
         record.events.some(
-          (event) => event.type === "tool_done" && event.tool === "read_file" && event.success,
+          (event) =>
+            event.type === "tool_done" &&
+            event.tool === "read_file" &&
+            event.success,
         )
       );
     });
@@ -200,7 +229,9 @@ const path = require("node:path");
       .waitFor({ state: "detached" });
     assert.equal(await page.locator(".final-card").count(), 0);
     assert.equal(await page.locator(".tl-error").count(), 0);
-    const readAction = page.locator(".tl-action").filter({ hasText: "hello.py" });
+    const readAction = page
+      .locator(".tl-action")
+      .filter({ hasText: "hello.py" });
     await readAction.waitFor();
     assert.match(await readAction.innerText(), /读取文件|已完成/);
     assert.equal(await (await fetch(`${url}/test/provider-count`)).text(), "5");
@@ -212,18 +243,22 @@ const path = require("node:path");
     await page.locator("#task-input").waitFor();
     await page
       .locator(".assistant-message")
-      .filter({ hasText: '没有明显问题，hello.py 中是 print("Hello, World!")。' })
+      .filter({
+        hasText: '没有明显问题，hello.py 中是 print("Hello, World!")。',
+      })
       .waitFor();
     assert.equal(await page.locator(".tl-error").count(), 0);
     await page.locator(".tl-action").filter({ hasText: "hello.py" }).waitFor();
     assert.equal(await (await fetch(`${url}/test/provider-count`)).text(), "5");
     assert.equal(
       await page.locator("#task-input").getAttribute("placeholder"),
-      "继续当前任务（点「新建任务」开始新会话）",
+      "继续当前任务（从会话栏新建独立会话）",
     );
     await page.locator("#task-input").fill("确认读取后还能继续");
     assert.equal(
-      await page.getByRole("button", { name: "执行任务", exact: true }).isEnabled(),
+      await page
+        .getByRole("button", { name: "执行任务", exact: true })
+        .isEnabled(),
       true,
       "natural reply must not leave the task busy after reload",
     );

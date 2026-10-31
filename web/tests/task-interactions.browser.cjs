@@ -1,5 +1,6 @@
 const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
+const { mkdirSync } = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
@@ -11,7 +12,7 @@ const { spawn } = require("node:child_process");
       path.dirname(require.resolve("vite/package.json")),
       "bin/vite.js",
     ),
-    "preview",
+    ...(process.env.DP_TASK_DEV ? ["--clearScreen", "false"] : ["preview"]),
     "--host",
     "127.0.0.1",
     "--port",
@@ -152,22 +153,24 @@ const { spawn } = require("node:child_process");
       await page.locator("#task-input").waitFor();
       if (records.length)
         await page
-          .locator(".task-history-select")
+          .locator(".session-item")
+          .first()
           .waitFor({ state: "attached" });
       await page.waitForTimeout(100);
       return { page, context, s };
     }
     const tests = [];
     const test = (name, fn) => tests.push([name, fn]);
+    const sessionItem = (page, id) =>
+      page.locator(".session-item").filter({ hasText: `任务 ${id}` });
     test("stale history response cannot overwrite newer selection", async () => {
       const { page, context, s } = await setup();
       let release;
       s.delays.A = new Promise((resolve) => {
         release = resolve;
       });
-      const history = page.getByRole("combobox", { name: "任务历史" });
-      await history.selectOption("A");
-      await history.selectOption("B");
+      await sessionItem(page, "A").click();
+      await sessionItem(page, "B").click();
       await page
         .locator("#agent-title")
         .filter({ hasText: "任务 B" })
@@ -183,8 +186,8 @@ const { spawn } = require("node:child_process");
       s.delays.A = new Promise((resolve) => {
         release = resolve;
       });
-      await page.getByRole("combobox", { name: "任务历史" }).selectOption("A");
-      await page.getByRole("button", { name: "新建任务" }).click();
+      await sessionItem(page, "A").click();
+      await page.getByRole("button", { name: "新建会话" }).click();
       await page.locator("#task-input").fill("新会话草稿");
       release();
       await page.waitForTimeout(120);
@@ -197,6 +200,7 @@ const { spawn } = require("node:child_process");
     });
     test("start stays disabled until this socket receives its first snapshot", async () => {
       const { page, context, s } = await setup([record("latest")]);
+      s.continuable = "latest";
       // Setup already consumed a snapshot; force a fresh socket generation.
       s.holdFirstSnapshot = true;
       s.sockets.at(-1).close();
@@ -216,22 +220,22 @@ const { spawn } = require("node:child_process");
     });
     test("draft is restored when switching between histories", async () => {
       const { page, context } = await setup([record("latest"), record("A")]);
-      const history = page.getByRole("combobox", { name: "任务历史" });
+      const history = (id) => sessionItem(page, id);
       const input = page.locator("#task-input");
       await input.fill("A草稿");
-      await history.selectOption("A");
+      await history("A").click();
       await page
         .locator("#agent-title")
         .filter({ hasText: "任务 A" })
         .waitFor();
       await input.fill("A任务草稿");
-      await history.selectOption("latest");
+      await history("latest").click();
       await page
         .locator("#agent-title")
         .filter({ hasText: "任务 latest" })
         .waitFor();
       assert.equal(await input.inputValue(), "A草稿");
-      await history.selectOption("A");
+      await history("A").click();
       await page
         .locator("#agent-title")
         .filter({ hasText: "任务 A" })
@@ -246,9 +250,7 @@ const { spawn } = require("node:child_process");
       ]);
       const input = page.locator("#task-input");
       await input.fill("保留我");
-      await page
-        .getByRole("combobox", { name: "任务历史" })
-        .selectOption("missing");
+      await sessionItem(page, "missing").click();
       await page.waitForTimeout(300);
       assert.match(
         await page.locator(".composer").innerText(),
@@ -263,12 +265,10 @@ const { spawn } = require("node:child_process");
       assert.equal(s.statusReads, statusBefore);
       await context.close();
     });
-    test("idle snapshot does not rewrite selected old task; global busy locks history", async () => {
+    test("idle snapshot preserves selected history while busy history remains browsable", async () => {
       const old = record("old", "interrupted");
       const { page, context, s } = await setup([record("latest"), old]);
-      await page
-        .getByRole("combobox", { name: "任务历史" })
-        .selectOption("old");
+      await sessionItem(page, "old").click();
       await page
         .locator("#agent-title")
         .filter({ hasText: "任务 old" })
@@ -280,7 +280,7 @@ const { spawn } = require("node:child_process");
         .send(JSON.stringify({ type: "run_state", state: "idle" }));
       await page.waitForTimeout(100);
       assert.match(
-        await page.locator("#agent-panel [role=status]").last().innerText(),
+        await page.locator(".run-status [role=status]").innerText(),
         /进程重启后中断/,
       );
       s.state = "running";
@@ -289,8 +289,8 @@ const { spawn } = require("node:child_process");
       await page.locator(".composer-context").waitFor();
       await page.waitForTimeout(100);
       assert.equal(
-        await page.getByRole("combobox", { name: "任务历史" }).isDisabled(),
-        true,
+        await page.locator(".session-item").first().isDisabled(),
+        false,
       );
       await context.close();
     });
@@ -303,9 +303,7 @@ const { spawn } = require("node:child_process");
         [record("latest"), record("missing")],
         { statusWait },
       );
-      await page
-        .getByRole("combobox", { name: "任务历史" })
-        .selectOption("missing");
+      await sessionItem(page, "missing").click();
       await page
         .getByRole("alert")
         .filter({ hasText: "任务记录读取失败" })
@@ -320,7 +318,7 @@ const { spawn } = require("node:child_process");
       await page.getByRole("button", { name: "重试", exact: true }).click();
       await page.waitForTimeout(100);
       assert.ok(s.taskReads > taskReads);
-      assert.equal(s.statusReads, 1);
+      assert.equal(s.statusReads, process.env.DP_TASK_DEV ? 2 : 1);
       await context.close();
     });
     test("a history success cannot remove a later model-status error's retry", async () => {
@@ -335,7 +333,7 @@ const { spawn } = require("node:child_process");
       s.delays.A = new Promise((resolve) => {
         releaseHistory = resolve;
       });
-      await page.getByRole("combobox", { name: "任务历史" }).selectOption("A");
+      await sessionItem(page, "A").click();
       releaseStatus();
       await page
         .getByRole("alert")
@@ -360,7 +358,7 @@ const { spawn } = require("node:child_process");
     });
     test("busy draft is identified as a same-session supplementary message", async () => {
       const { page, context, s } = await setup([record("A")]);
-      await page.getByRole("button", { name: "新建任务" }).click();
+      await page.getByRole("button", { name: "新建会话" }).click();
       await page.locator("#task-input").fill("新会话草稿");
       s.state = "running";
       s.current = record("active", "running");
@@ -394,6 +392,7 @@ const { spawn } = require("node:child_process");
     test("unconfirmed start is retained across reconnect without automatic resend or target drift", async () => {
       const { page, context, s } = await setup([record("previous")]);
       s.autoAccept = false;
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
       const input = page.locator("#task-input");
       await input.fill("不丢失的部署指令");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
@@ -418,6 +417,7 @@ const { spawn } = require("node:child_process");
     });
     test("accepted start is recognized by requestId on reconnect and keeps a later draft", async () => {
       const { page, context, s } = await setup([record("previous")]);
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
       const input = page.locator("#task-input");
       await input.fill("accepted");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
@@ -433,6 +433,7 @@ const { spawn } = require("node:child_process");
     test("a late accepted request found in task summaries clears only its untouched automatic restoration", async () => {
       const { page, context, s } = await setup([record("previous")]);
       s.autoAccept = false;
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
       const input = page.locator("#task-input");
       await input.fill("late accepted");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
@@ -454,6 +455,7 @@ const { spawn } = require("node:child_process");
     test("late acceptance keeps a draft that was edited and then restored to the original text", async () => {
       const { page, context, s } = await setup([record("previous")]);
       s.autoAccept = false;
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
       const input = page.locator("#task-input");
       await input.fill("request text");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
@@ -472,6 +474,7 @@ const { spawn } = require("node:child_process");
     test("late accepted summary binds the newer draft to its request task, not another task", async () => {
       const { page, context, s } = await setup([record("previous")]);
       s.autoAccept = false;
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
       const input = page.locator("#task-input");
       await input.fill("请求 A");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
@@ -496,6 +499,7 @@ const { spawn } = require("node:child_process");
         record("B"),
       ]);
       s.autoAccept = false;
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
       const input = page.locator("#task-input");
       await input.fill("请求 A");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
@@ -503,9 +507,7 @@ const { spawn } = require("node:child_process");
       s.sockets.at(-1).close();
       await page.waitForTimeout(1000);
       assert.ok(s.sockets.length >= 2);
-      const history = page.locator(".task-history-select");
-      await history.waitFor();
-      await history.selectOption("B");
+      await sessionItem(page, "B").click();
       await page
         .locator("#agent-title")
         .filter({ hasText: "任务 B" })
@@ -516,7 +518,7 @@ const { spawn } = require("node:child_process");
       await page.waitForTimeout(120);
       assert.match(await page.locator("#agent-title").innerText(), /任务 B/);
       assert.equal(await input.inputValue(), "B的草稿");
-      await history.selectOption("A");
+      await sessionItem(page, "A").click();
       await page
         .locator("#agent-title")
         .filter({ hasText: "任务 A" })
@@ -547,6 +549,7 @@ const { spawn } = require("node:child_process");
     test("explicit rejection preserves pending text and a newer draft in the owning session", async () => {
       const { page, context, s } = await setup([record("previous")]);
       s.autoAccept = false;
+      await page.getByRole("button", { name: "新建会话", exact: true }).click();
       const input = page.locator("#task-input");
       await input.fill("被拒绝的提交");
       await page.getByRole("button", { name: "执行任务", exact: true }).click();
@@ -716,6 +719,12 @@ const { spawn } = require("node:child_process");
       s.records.unshift(current);
       s.state = "running";
       s.snapshot();
+      const screenshotDir = path.join(root, ".probe-tmp", "ui-screenshots");
+      mkdirSync(screenshotDir, { recursive: true });
+      await page.screenshot({
+        path: path.join(screenshotDir, "codex-long-task.png"),
+        fullPage: true,
+      });
       const input = page.locator("#task-input");
       await input.waitFor();
       const runningMeta = page.locator(".action-running-meta");
@@ -764,7 +773,10 @@ const { spawn } = require("node:child_process");
         await cancelled.locator(".action-log-path code").innerText(),
         "C:/private/command.log",
       );
-      assert.equal(await input.getAttribute("placeholder"), "补充当前任务");
+      assert.equal(
+        await input.getAttribute("placeholder"),
+        "补充当前任务，点击发送后在当前执行步骤结束后应用",
+      );
       assert.equal(
         await page.getByRole("button", { name: "停止任务" }).isEnabled(),
         true,

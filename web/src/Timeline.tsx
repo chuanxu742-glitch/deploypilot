@@ -5,6 +5,7 @@ import {
   type TimelineItem,
 } from "./agent-state";
 import { Icon, type IconName } from "./Icon";
+import { Markdown } from "./Markdown";
 
 const toolLabels: Record<string, string> = {
   run_command: "执行命令",
@@ -62,8 +63,12 @@ export function TimelineRow({
         </li>
       );
     case "message": {
-      const text = item.event.text?.trim();
-      return text ? <li className="assistant-message">{text}</li> : null;
+      const text = item.event.text;
+      return text?.trim() ? (
+        <li className="assistant-message">
+          <Markdown>{text}</Markdown>
+        </li>
+      ) : null;
     }
     case "user":
       return <OperatorTurn text={item.event.text} followUp />;
@@ -90,7 +95,7 @@ export function TimelineRow({
                     ? "任务未完成"
                     : "任务结束"}
               </strong>
-              {item.event.text && <p>{item.event.text}</p>}
+              {item.event.text && <Markdown>{item.event.text}</Markdown>}
             </div>
           </div>
         </li>
@@ -177,6 +182,8 @@ function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const [now, setNow] = useState(Date.now);
   const outputRef = useRef<HTMLPreElement>(null);
+  const outputFollowRef = useRef(true);
+  const [outputFollowing, setOutputFollowing] = useState(true);
   const startedAtRef = useRef(item.call?.timestamp ?? Date.now());
   const tool = item.call?.tool ?? item.done?.tool ?? "";
   const target = item.call?.command ?? item.call?.path ?? item.done?.path;
@@ -207,7 +214,7 @@ function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
   // Live and failed actions stay open until the user chooses otherwise.
   const open = expanded ?? (live || cancelled || item.error !== undefined);
   useEffect(() => {
-    if (open && live && outputRef.current)
+    if (open && live && outputFollowRef.current && outputRef.current)
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
   }, [output, open, live]);
   useEffect(() => {
@@ -269,7 +276,35 @@ function ActionRow({ item, live }: { item: ActionItem; live: boolean }) {
           )}
           {output && (
             <div className="action-output">
-              <pre ref={outputRef}>{output}</pre>
+              <pre
+                ref={outputRef}
+                onScroll={(event) => {
+                  const element = event.currentTarget;
+                  const following =
+                    element.scrollHeight -
+                      element.scrollTop -
+                      element.clientHeight <
+                    24;
+                  outputFollowRef.current = following;
+                  setOutputFollowing(following);
+                }}
+              >
+                {output}
+              </pre>
+              {live && !outputFollowing && (
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    outputFollowRef.current = true;
+                    setOutputFollowing(true);
+                    if (outputRef.current)
+                      outputRef.current.scrollTop =
+                        outputRef.current.scrollHeight;
+                  }}
+                >
+                  返回最新输出
+                </button>
+              )}
             </div>
           )}
           {item.error !== undefined &&

@@ -43,6 +43,25 @@ func TestCheckCommandBlocks(t *testing.T) {
 		"shutdown /r /t 0",
 		"bcdedit /delete {current}",
 		"vssadmin delete shadows /all /quiet",
+		// Gaps found by the deep agent test: nested shells, Start-Process,
+		// wildcard and forward-slash roots, the profile, find and sysrq.
+		`bash -c "reboot"`,
+		`sh -c 'shutdown -h now'`,
+		`bash -lc "rm -rf /"`,
+		`powershell -c "Stop-Computer -Force"`,
+		`pwsh -NoProfile -Command "Restart-Computer"`,
+		`cmd /c "shutdown /s /t 0"`,
+		`powershell -c "cmd /c 'shutdown /r /t 0'"`,
+		`Start-Process shutdown -ArgumentList '/s','/t','0'`,
+		`Start-Process -FilePath "shutdown.exe" -ArgumentList "/r"`,
+		`Remove-Item C:\* -Recurse -Force`,
+		`rm -r -fo C:/`,
+		`Remove-Item -Recurse -Force D:\`,
+		`Remove-Item -Recurse -Force $env:USERPROFILE`,
+		`Remove-Item -Recurse -Force ~`,
+		`find / -delete`,
+		`find / -type f -delete`,
+		`echo b > /proc/sysrq-trigger`,
 	}
 	for _, c := range blocked {
 		if ok, _ := CheckCommand(c); !ok {
@@ -80,9 +99,55 @@ func TestCheckCommandAllows(t *testing.T) {
 		"Get-Volume",
 		"Get-Help Restart-Service",
 		`rm -rf "./dist"`,
+		// Near misses for the nested-shell, profile and find rules.
+		`bash -c "echo will reboot later"`,
+		`bash -c "grep -E 'shutdown|reboot' /var/log/syslog"`,
+		`sh -c "cd /opt/app && ./start.sh"`,
+		`powershell -Command "Get-Content C:\logs\app.log -Tail 50"`,
+		`cmd /c "dir C:\"`,
+		`cmd /c "rd /s /q C:\temp\build"`,
+		`Remove-Item -Recurse -Force $env:USERPROFILE\.cache\pip`,
+		`Remove-Item -Recurse -Force ~\Downloads\old`,
+		`Remove-Item C:\temp\* -Recurse -Force`,
+		`Start-Process python -ArgumentList 'app.py' -PassThru`,
+		`Get-Process | Where-Object Name -eq shutdown`,
+		`find /tmp/build -delete`,
+		`find . -name '*.pyc' -delete`,
+		`find /var/log -name '*.gz' -mtime +7 -delete`,
+		`cat /proc/sysrq-trigger`,
 	}
 	for _, c := range allowed {
 		if ok, reason := CheckCommand(c); ok {
+			t.Errorf("expected ALLOW for %q, blocked by %q", c, reason)
+		}
+	}
+}
+
+func TestCheckPowerShellProtectsTheSharedTerminal(t *testing.T) {
+	blocked := []string{
+		// The command a live run produced.
+		"$pid = (Get-NetTCPConnection -LocalPort 54026).OwningProcess\nif ($pid) { Stop-Process -Id $pid -Force }",
+		"$PID=1234",
+		"foreach ($pid in $ids) { Stop-Process -Id $pid }",
+		"Stop-Process -Id $PID",
+		"taskkill /F /PID $pid",
+	}
+	for _, c := range blocked {
+		if ok, _ := CheckPowerShell(c); !ok {
+			t.Errorf("expected BLOCK for %q", c)
+		}
+	}
+	allowed := []string{
+		"$procId = (Get-NetTCPConnection -LocalPort 8080).OwningProcess; Stop-Process -Id $procId",
+		`"shell is $PID"`,
+		"Write-Output $PID",
+		"if ($PID -eq 4) { 'x' }",
+		"$pidFile = 'app.pid'; Get-Content $pidFile",
+		"$appPid = 5; Stop-Process -Id $appPid",
+		`Write-Host 'use $pid = 1 in bash'`,
+	}
+	for _, c := range allowed {
+		if ok, reason := CheckPowerShell(c); ok {
 			t.Errorf("expected ALLOW for %q, blocked by %q", c, reason)
 		}
 	}

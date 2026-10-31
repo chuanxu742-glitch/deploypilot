@@ -53,3 +53,48 @@ func TestStreamTotalSizeIsBounded(t *testing.T) {
 		t.Fatal("unbounded response accepted")
 	}
 }
+
+// Bailu sends a ~260-byte envelope for every few characters, mostly
+// reasoning. A long but ordinary reply must not be mistaken for an oversized one.
+func TestEnvelopeHeavyStreamIsAccepted(t *testing.T) {
+	envelope := `data: {"id":"chatcmpl-aa48f549db50f640b0aadbbd","object":"chat.completion.chunk","created":1793416226,"model":"bailu-auto","provider":"BAILU AI","choices":[{"index":0,"delta":{"content":"%s","role":"assistant","reasoning_content":"%s"},"finish_reason":null}]}` + "\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for i := 0; i < 12000; i++ { // about 3 MiB on the wire, 60 KiB of text
+			fmt.Fprintf(w, envelope, "", "思考一下")
+		}
+		fmt.Fprintf(w, envelope, "完成", "")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	res, err := New(Config{BaseURL: srv.URL, APIKey: "test"}).StreamChat(context.Background(), ChatRequest{}, nil)
+	if err != nil {
+		t.Fatalf("ordinary long reasoning rejected: %v", err)
+	}
+	if res.Message.Content != "完成" {
+		t.Fatalf("content = %q", res.Message.Content)
+	}
+}
+
+// Reasoning counts toward the text limit, and a stream of empty events is
+// still bounded on the wire.
+func TestReasoningAndEmptyEventsAreBounded(t *testing.T) {
+	for name, line := range map[string]string{
+		"reasoning": `data: {"choices":[{"delta":{"reasoning_content":"` + strings.Repeat("r", 4096) + `"}}]}` + "\n\n",
+		"empty":     `data: {"choices":[{"delta":{"content":""}}],"padding":"` + strings.Repeat("p", 4096) + `"}` + "\n\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for i := 0; i < 9000; i++ {
+					if _, err := fmt.Fprint(w, line); err != nil {
+						return
+					}
+				}
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			}))
+			defer srv.Close()
+			if _, err := New(Config{BaseURL: srv.URL, APIKey: "test"}).StreamChat(context.Background(), ChatRequest{}, nil); err == nil {
+				t.Fatal("unbounded response accepted")
+			}
+		})
+	}
+}

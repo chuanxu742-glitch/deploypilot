@@ -25,7 +25,7 @@ func TestInvalidToolArgumentsHaveNoSideEffects(t *testing.T) {
 		{toolFinish, `{"summary":" ","success":true}`},
 		{toolFinish, `{"summary":"done","success":"yes"}`},
 		{toolFinish, `{"summary":"need input","success":true,"outcome":"needs_input"}`},
-		{toolFinish, `{"summary":"need input","success":false,"outcome":"needs_input","verification_call_ids":[]}`},
+		{toolFinish, `{"summary":"need input","success":false,"outcome":"needs_input","verification_call_ids":["unexpected-check"]}`},
 		{toolFinish, `{"summary":"need input","success":false,"outcome":"unknown"}`},
 	}
 	for _, tt := range cases {

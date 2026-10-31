@@ -70,7 +70,7 @@ function Get-File($url, $dest) {
     }
 }
 
-Write-Host "==> Downloading $asset ($version) ..." -ForegroundColor Cyan
+Write-Host "  [1/3] Downloading BaiLu DeployPilot ($version)..." -ForegroundColor Gray
 $ok = $false
 foreach ($base in $sources) {
     if ((Get-File "$base/$asset" "$tmp\$asset") -and (Get-File "$base/checksums.txt" "$tmp\checksums.txt")) {
@@ -88,11 +88,12 @@ if (-not $want) { Remove-Item -Recurse -Force $tmp; throw "checksums.txt has no 
 
 $got = (Get-FileHash "$tmp\$asset" -Algorithm SHA256).Hash.ToLower()
 if ($got -ne $want.ToLower()) { Remove-Item -Recurse -Force $tmp; throw "Checksum mismatch (expected $want, got $got)" }
-Write-Host '==> Checksum verified.' -ForegroundColor Cyan
+Write-Host '  [2/3] SHA-256 verified.' -ForegroundColor Gray
 
 $bin = Join-Path $dir 'deploypilot.exe'
 Copy-Item "$tmp\$asset" $bin -Force
 Remove-Item -Recurse -Force $tmp
 
-Write-Host '==> Starting DeployPilot ...' -ForegroundColor Cyan
+Write-Host '  [3/3] Starting BaiLu DeployPilot...' -ForegroundColor Gray
+Write-Host ''
 & $bin

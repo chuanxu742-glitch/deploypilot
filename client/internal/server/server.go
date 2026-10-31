@@ -60,8 +60,10 @@ type Server struct {
 	agentMaxSteps       int
 	// The most recent finished run's conversation, kept in memory only, so the
 	// operator can continue that task. Guarded by taskMu.
-	lastConversation *agent.Conversation
-	lastConvTaskID   string
+	lastConversation    *agent.Conversation
+	lastConvTaskID      string
+	conversations       map[string]*agent.Conversation
+	taskAcceptingSteers bool
 }
 
 func (s *Server) acquireAgent() bool {

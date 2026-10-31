@@ -4,7 +4,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/deploypilot/deploypilot/internal/banner"
 	"github.com/deploypilot/deploypilot/internal/console"
 )
 
@@ -55,8 +57,14 @@ func TestQRBlockFitsTheTerminal(t *testing.T) {
 		{"logs keep the QR code", console.Caps{NarrowBlocks: true}, "▀"},
 	}
 	for _, c := range cases {
-		if got := qrBlock(c.caps, link); !strings.Contains(got, c.expect) {
+		p := pairingFor(c.caps, "扫码", link, 10*time.Minute)
+		opts := banner.DefaultOptions(c.caps, "0.4.9")
+		got := banner.RenderPairing(opts, p)
+		if !strings.Contains(got, c.expect) {
 			t.Errorf("%s: output lacks %q", c.name, c.expect)
+		}
+		if !strings.Contains(got, link) || !strings.Contains(got, "10 分钟内有效") {
+			t.Errorf("%s: link or validity note missing", c.name)
 		}
 	}
 }

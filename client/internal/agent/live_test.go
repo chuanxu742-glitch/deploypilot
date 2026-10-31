@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -18,24 +19,47 @@ type simExec struct {
 	commands []string
 }
 
+// Run answers every probe a command contains, in order, like a real shell
+// running a combined check. nvidia-smi is missing: on its own it exits 127,
+// but `nvidia-smi || echo ...` falls through to exit 0 as bash would.
 func (s *simExec) Run(_ context.Context, command string, _ time.Duration, onOutput func(string)) (int, string, error) {
 	s.mu.Lock()
 	s.commands = append(s.commands, command)
 	s.mu.Unlock()
-	out, code := "", 0
-	switch {
-	case strings.Contains(command, "uname"):
-		out = "Linux demo 5.15.0-91-generic x86_64 GNU/Linux"
-	case strings.Contains(command, "df"):
-		out = "/dev/sda1  100G  20G  80G  20% /"
-	case strings.Contains(command, "free"):
-		out = "Mem:  31Gi  4Gi  27Gi"
-	case strings.Contains(command, "python3"):
-		out = "Python 3.10.12"
-	case strings.Contains(command, "nvidia-smi"):
-		out, code = "bash: nvidia-smi: command not found", 127
-	default:
+	probes := []struct{ key, out string }{
+		{"os-release", "PRETTY_NAME=\"Ubuntu 22.04.4 LTS\"\nVERSION_ID=\"22.04\""},
+		{"lsb_release", "Description:\tUbuntu 22.04.4 LTS"},
+		{"uname", "Linux demo 5.15.0-91-generic x86_64 GNU/Linux"},
+		{"df", "Filesystem Size Used Avail Use% Mounted on\n/dev/sda1  100G  20G  80G  20% /"},
+		{"free", "              total   used   free\nMem:           31Gi    4Gi   27Gi"},
+		{"meminfo", "MemTotal:       32768000 kB\nMemAvailable:   28311552 kB"},
+		{"python3", "Python 3.10.12"},
+		{"nvidia-smi", "bash: nvidia-smi: command not found"},
+		{"lspci", ""},
+	}
+	type hit struct {
+		at  int
+		out string
+	}
+	var hits []hit
+	for _, p := range probes {
+		if i := strings.Index(command, p.key); i >= 0 {
+			hits = append(hits, hit{i, p.out})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].at < hits[j].at })
+	var parts []string
+	for _, h := range hits {
+		if h.out != "" {
+			parts = append(parts, h.out)
+		}
+	}
+	out, code := strings.Join(parts, "\n"), 0
+	if len(hits) == 0 {
 		out = "ok"
+	}
+	if strings.Contains(command, "nvidia-smi") && !strings.Contains(command, "||") {
+		code = 127
 	}
 	if onOutput != nil {
 		onOutput(out)

@@ -19,7 +19,10 @@ type agentClientMsg struct {
 	// RequestID identifies this submission so reconnecting clients can match it
 	// against the accepted task record without replaying the start command.
 	RequestID string `json:"requestId,omitempty"`
+	TaskID    string `json:"taskId,omitempty"`
 }
+
+const agentFrameLimit = 6*64*1024 + 4096
 
 // The WebSocket observes the server-owned task. Closing a viewer never cancels it.
 func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +33,10 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	defer s.track(r, conn)()
-	conn.SetReadLimit(64 * 1024)
+	// startTask enforces the 64 KiB text limit with a readable reason. JSON
+	// escaping can grow text up to 6x (\u00XX), so the frame limit must stay
+	// above that, or a pasted Windows log closes the socket with no message.
+	conn.SetReadLimit(agentFrameLimit)
 	touch, stopSession := s.guardSession(r, conn)
 	defer stopSession()
 	stopPing := make(chan struct{})
@@ -76,11 +82,22 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		switch msg.Type {
+		case "steer":
+			if reason := s.queueSteer(msg.TaskID, msg.Task, msg.RequestID); reason != "" {
+				data, _ := json.Marshal(map[string]any{"type": "error", "taskId": msg.TaskID, "requestId": msg.RequestID, "text": reason})
+				send(data)
+			} else {
+				data, _ := json.Marshal(map[string]any{"type": "steer_ack", "taskId": msg.TaskID, "requestId": msg.RequestID, "state": "queued"})
+				send(data)
+			}
 		case "stop":
 			s.stopTask()
 		case "start":
 			if reason := s.startTask(msg.Task, owner.Value, msg.ContinueFrom, msg.RequestID); reason != "" {
 				rejection := map[string]any{"type": agent.EventError, "text": reason}
+				if taskID := s.acceptedStartTaskID(msg.RequestID); taskID != "" {
+					rejection["taskId"] = taskID
+				}
 				if msg.RequestID != "" {
 					rejection["requestId"] = msg.RequestID
 				}

@@ -10,8 +10,15 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import type { ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import {
+  slate,
+  sand,
+  red,
+  amber,
+  green,
+  blue,
+  purple,
+  cyan,
   slateDark,
-  sandDark,
   redDark,
   amberDark,
   greenDark,
@@ -24,48 +31,67 @@ import type { ThemeName } from "./ui-preferences";
 
 export type TerminalConnection = "connecting" | "connected" | "disconnected";
 
-// The terminal is always dark: slate for day and night, warm sand for comfort.
-// ANSI colours are shared; only the neutral surface and text change.
+// Match the surrounding terminal surface in index.css; changing the palette
+// updates the existing xterm so scrollback and the shell connection survive.
 function terminalPalette(theme: ThemeName): ITheme {
   const neutral =
     theme === "comfort"
       ? {
-          surface: sandDark.sand1,
-          raised: sandDark.sand2,
-          muted: sandDark.sand9,
-          soft: sandDark.sand11,
-          text: sandDark.sand12,
+          surface: amber.amber2,
+          raised: sand.sand2,
+          muted: sand.sand11,
+          soft: sand.sand11,
+          text: sand.sand12,
         }
-      : {
-          surface: slateDark.slate1,
-          raised: slateDark.slate2,
-          muted: slateDark.slate9,
-          soft: slateDark.slate11,
-          text: slateDark.slate12,
-        };
+      : theme === "night"
+        ? {
+            surface: slateDark.slate1,
+            raised: slateDark.slate2,
+            muted: slateDark.slate9,
+            soft: slateDark.slate11,
+            text: slateDark.slate12,
+          }
+        : {
+            surface: slate.slate1,
+            raised: slate.slate2,
+            muted: slate.slate11,
+            soft: slate.slate11,
+            text: slate.slate12,
+          };
+  const accents =
+    theme === "night"
+      ? {
+          red: redDark,
+          amber: amberDark,
+          green: greenDark,
+          blue: blueDark,
+          purple: purpleDark,
+          cyan: cyanDark,
+        }
+      : { red, amber, green, blue, purple, cyan };
   return {
     background: neutral.surface,
     foreground: neutral.text,
-    cursor: blueDark.blue11,
+    cursor: accents.blue.blue11,
     cursorAccent: neutral.surface,
-    selectionBackground: blueDark.blue5,
+    selectionBackground: accents.blue.blue5,
     selectionForeground: neutral.text,
-    black: neutral.raised,
+    black: theme === "night" ? neutral.raised : neutral.text,
     brightBlack: neutral.muted,
     white: neutral.soft,
     brightWhite: neutral.text,
-    red: redDark.red9,
-    brightRed: redDark.red11,
-    green: greenDark.green9,
-    brightGreen: greenDark.green11,
-    yellow: amberDark.amber9,
-    brightYellow: amberDark.amber11,
-    blue: blueDark.blue9,
-    brightBlue: blueDark.blue11,
-    magenta: purpleDark.purple9,
-    brightMagenta: purpleDark.purple11,
-    cyan: cyanDark.cyan9,
-    brightCyan: cyanDark.cyan11,
+    red: accents.red.red11,
+    brightRed: accents.red.red12,
+    green: accents.green.green11,
+    brightGreen: accents.green.green12,
+    yellow: accents.amber.amber11,
+    brightYellow: accents.amber.amber12,
+    blue: accents.blue.blue11,
+    brightBlue: accents.blue.blue12,
+    magenta: accents.purple.purple11,
+    brightMagenta: accents.purple.purple12,
+    cyan: accents.cyan.cyan11,
+    brightCyan: accents.cyan.cyan12,
   };
 }
 
@@ -116,7 +142,6 @@ export function Terminal({
     terminalRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(element);
 
     let socket: WebSocket | null = null;
     let disposed = false;
@@ -258,8 +283,11 @@ export function Terminal({
 
     const dataSubscription = term.onData((data) => {
       if (taskActiveRef.current || agentStateRef.current !== "idle") return;
-      if (socket?.readyState === WebSocket.OPEN)
-        socket.send(encoder.encode(data));
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      // The server closes frames over 64 KiB; split large pastes.
+      const bytes = encoder.encode(data);
+      for (let i = 0; i < bytes.length; i += 32 * 1024)
+        socket.send(bytes.subarray(i, i + 32 * 1024));
     });
     const onResize = () => {
       if (!element.clientWidth || !element.clientHeight || disposed) return;
@@ -270,8 +298,14 @@ export function Terminal({
       cancelAnimationFrame(resizeFrame);
       resizeFrame = requestAnimationFrame(onResize);
     });
-    observer.observe(element);
-    connect();
+    // xterm 5.5 schedules a viewport callback when opened; it can outlive an
+    // immediate Strict Mode cleanup. Do not open the discarded probe mount.
+    queueMicrotask(() => {
+      if (disposed) return;
+      term.open(element);
+      observer.observe(element);
+      connect();
+    });
 
     return () => {
       disposed = true;

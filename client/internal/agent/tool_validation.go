@@ -147,17 +147,25 @@ func validateToolArgs(name, input string) error {
 		if err := nonempty(a.Summary, "summary"); err != nil {
 			return err
 		}
-		if a.Outcome != "" && a.Outcome != "needs_input" {
-			return fmt.Errorf("outcome must be omitted or needs_input")
+		switch a.Outcome {
+		case "", "needs_input":
+		case "completed":
+			if !a.Success {
+				return fmt.Errorf("outcome=completed requires success=true")
+			}
+		case "failed":
+			if a.Success {
+				return fmt.Errorf("outcome=failed requires success=false")
+			}
+		default:
+			return fmt.Errorf("outcome must be completed, failed, needs_input, or omitted")
 		}
 		if a.Outcome == "needs_input" {
 			if a.Success {
 				return fmt.Errorf("outcome=needs_input requires success=false")
 			}
-			var fields map[string]json.RawMessage
-			_ = json.Unmarshal([]byte(input), &fields)
-			if _, ok := fields["verification_call_ids"]; ok {
-				return fmt.Errorf("outcome=needs_input must not include verification_call_ids")
+			if len(a.VerificationCallIDs) > 0 {
+				return fmt.Errorf("outcome=needs_input must not reference verification_call_ids")
 			}
 		}
 		return nil

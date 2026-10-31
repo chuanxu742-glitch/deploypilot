@@ -31,7 +31,7 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolRunCommand,
-				Description: "Run a shell command using " + shell + " in the operator's persistent terminal (cd and exported variables persist between calls). Returns exit code and combined stdout/stderr (long output keeps its head and tail); the returned call_id can be referenced as verification evidence. Commands cannot receive keyboard input: use non-interactive flags, and start long-running services in the background with logs instead of in the foreground. Commands run sequentially.",
+				Description: "Run a shell command using " + shell + " in the operator's persistent terminal (cd and exported variables persist between calls and between tasks, so the terminal may start in a directory left by earlier work; prefer absolute paths). Returns exit code, the terminal's working directory after the command (cwd), and combined stdout/stderr (long output keeps its head and tail); the returned call_id can be referenced as verification evidence. Commands cannot receive keyboard input: use non-interactive flags, and start long-running services in the background with logs instead of in the foreground. Commands run sequentially.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
@@ -127,13 +127,13 @@ func toolSet() []llm.Tool {
 			Type: "function",
 			Function: llm.FunctionDefinition{
 				Name:        toolFinish,
-				Description: "For an already started task, call finish to report explicitly verified deployment success or a real failure. After reading files or checking the environment, you may explain results in a normal natural-language reply without finish. If an operator answer is required, use outcome=needs_input with success=false and ask a concrete question in summary. On success, cite real successful run_command or wait_for call IDs in verification_call_ids; run the final verification immediately before finish, with no later changes.",
+				Description: "For an already started task, call finish to report explicitly verified deployment success or a real failure. After reading files or checking the environment, you may explain results in a normal natural-language reply without finish. If an operator answer is required, use outcome=needs_input with success=false and ask a concrete question in summary. On success, cite real successful run_command or wait_for call IDs in verification_call_ids. Only the most recent run_command (and wait_for calls after it) count: every new command or file change invalidates earlier IDs, so run all final checks together in one run_command immediately before finish and cite that call_id.",
 				Parameters: raw(`{
 					"type":"object",
 					"properties":{
 						"summary":{"type":"string","description":"What was accomplished, how to use/verify the result, and any follow-ups."},
 						"success":{"type":"boolean"},
-						"outcome":{"type":"string","enum":["needs_input"],"description":"For an in-progress task blocked on information only the operator can provide. Requires success=false and must not include verification_call_ids."},
+						"outcome":{"type":"string","enum":["completed","failed","needs_input"],"description":"Use completed with success=true for verified success; failed with success=false for a real failure; needs_input with success=false when an operator answer is required. For needs_input, verification_call_ids must be empty or omitted."},
 						"verification_call_ids":{"type":"array","items":{"type":"string"},"description":"Successful run_command or wait_for call IDs supporting success=true."}
 					},
 					"required":["summary","success"]

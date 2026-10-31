@@ -153,8 +153,8 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
 		return nil, c.statusError(resp)
 	}
 	var mr modelsResponse
@@ -197,9 +197,9 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, onDelta func(s
 }
 
 func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(string)) (result *ChatResult, err error) {
-	// Most stream errors are not retried once content has reached the UI. The
-	// one explicit upstream_busy case may retry the same model request; this
-	// attempt's assembler is local and discarded, and tools only run after the
+	// Most stream errors are not retried once content has reached the UI.
+	// Structured transient provider errors may retry the same model request;
+	// a failed attempt's assembler is discarded, and tools only run after the
 	// entire response has passed validation. Previously streamed text can repeat.
 	started := false
 	defer func() {
@@ -233,14 +233,17 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	defer idleBody.Close()
 
 	asm := newAssembler()
-	totalBytes := 0
+	rawBytes, payloadBytes := 0, 0
 	sawDone := false
 	sc := bufio.NewScanner(idleBody)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
-		totalBytes += len(sc.Bytes())
-		if totalBytes > 2*1024*1024 {
-			return nil, &streamError{err: errors.New("model response exceeds 2 MiB limit")}
+		// Providers wrap every few characters in a ~250-byte JSON envelope, so
+		// the text limit applies to what the model produced; the raw limit
+		// only stops a stream that never ends.
+		rawBytes += len(sc.Bytes())
+		if rawBytes > maxStreamRawBytes {
+			return nil, &streamError{err: errResponseTooLarge}
 		}
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
@@ -257,11 +260,8 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 			return nil, fmt.Errorf("invalid model stream event: %w", err)
 		}
 		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
-			var providerErr struct {
-				Code string `json:"code"`
-			}
-			if json.Unmarshal(chunk.Error, &providerErr) == nil && providerErr.Code == upstreamBusyCode {
-				return nil, &upstreamBusyError{code: providerErr.Code}
+			if code, ok := transientStreamErrorCode(chunk.Error); ok {
+				return nil, &upstreamBusyError{code: code}
 			}
 			return nil, fmt.Errorf("model stream error: %s", c.Redact(string(chunk.Error)))
 		}
@@ -269,6 +269,9 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 			continue
 		}
 		ch := chunk.Choices[0]
+		if payloadBytes += ch.Delta.payloadBytes(); payloadBytes > maxStreamPayloadBytes {
+			return nil, &streamError{err: errResponseTooLarge}
+		}
 		if ch.Delta.Content != "" && onDelta != nil {
 			onDelta(ch.Delta.Content)
 		}
@@ -300,12 +303,47 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest, onDelta func(str
 	return result, nil
 }
 
+const (
+	// maxStreamPayloadBytes bounds the text, reasoning and tool arguments of
+	// one model response.
+	maxStreamPayloadBytes = 2 * 1024 * 1024
+	// maxStreamRawBytes bounds the SSE bytes of one response, envelopes included.
+	maxStreamRawBytes = 32 * 1024 * 1024
+)
+
+var errResponseTooLarge = errors.New("模型单次回复超过 2 MiB 上限，已停止接收，其中的工具调用没有执行。请缩小任务范围后继续")
+
 // ErrStreamInterrupted marks a response whose connection dropped before the
 // model finished. No tools from it were executed, so the caller may safely
 // request the same turn again; already-streamed text may then appear twice.
 var ErrStreamInterrupted = errors.New("model stream interrupted")
 
 const upstreamBusyCode = "upstream_busy"
+
+// Providers may encode an HTTP-style stream error code as an integer or a
+// string. Only explicit transient codes bypass the ordinary stream-error guard;
+// message text and provider metadata cannot make authentication errors retryable.
+func transientStreamErrorCode(payload json.RawMessage) (string, bool) {
+	var providerErr struct {
+		Code json.RawMessage `json:"code"`
+	}
+	if json.Unmarshal(payload, &providerErr) != nil {
+		return "", false
+	}
+	var code string
+	if json.Unmarshal(providerErr.Code, &code) != nil {
+		var status int
+		if json.Unmarshal(providerErr.Code, &status) != nil {
+			return "", false
+		}
+		code = strconv.Itoa(status)
+	}
+	if code == upstreamBusyCode {
+		return code, true
+	}
+	status, err := strconv.Atoi(code)
+	return code, err == nil && (status == http.StatusTooManyRequests || (status >= 500 && status <= 599))
+}
 
 type upstreamBusyError struct{ code string }
 
@@ -337,7 +375,7 @@ func IsContextOverflow(err error) bool {
 }
 
 // streamError prevents replaying partial replies for ordinary stream failures.
-// The exact upstream_busy provider code is checked before this wrapper by
+// Explicit transient provider codes are checked before this wrapper by
 // retryable; its incomplete assembled result is discarded before retry.
 type streamError struct{ err error }
 
@@ -413,8 +451,7 @@ func WithRetryWait(ctx context.Context, callback func(attempt int, delay time.Du
 	return context.WithValue(ctx, retryWaitContextKey{}, callback)
 }
 
-// withRetry retries pre-stream failures and stream responses with the exact
-// upstream_busy provider code.
+// withRetry retries pre-stream failures and structured transient stream errors.
 // Delays grow exponentially from 2s to 60s (about three minutes at the limit),
 // or use the provider's Retry-After when it asks for longer.
 func (c *Client) withRetry(ctx context.Context, fn func() error) error {

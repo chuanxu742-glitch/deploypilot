@@ -22,7 +22,7 @@ REPO="${DP_REPO:-chuanxu742-glitch/deploypilot}"
 VERSION="${DP_VERSION:-latest}"
 MIRRORS="https://gh-proxy.com/ https://ghfast.top/"
 
-log()  { printf '\033[36m==>\033[0m %s\n' "$1" >&2; }
+log()  { printf '%s\n' "$1" >&2; }
 err()  { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
 # --- platform detection -----------------------------------------------------
@@ -70,7 +70,7 @@ tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT INT TERM
 
-log "下载 $asset ($VERSION) …"
+log "  [1/3] 下载 BaiLu DeployPilot ($VERSION)…"
 ok=""
 for base in $sources; do
   if download "${base}/${asset}" "${tmp}/${asset}" && download "${base}/checksums.txt" "${tmp}/checksums.txt"; then
@@ -94,7 +94,7 @@ else
   err "need sha256sum or shasum to verify download"
 fi
 [ "$got" = "$want" ] || err "校验和不匹配 (期望 $want, 实际 $got)"
-log "校验通过。"
+log "  [2/3] SHA-256 校验通过。"
 
 # --- install & run ----------------------------------------------------------
 dir="${DP_INSTALL_DIR:-${HOME}/.deploypilot/bin}"
@@ -108,5 +108,6 @@ mv -f "${bin}.new" "$bin"
 cleanup
 trap - EXIT INT TERM
 
-log "启动 DeployPilot …"
+log "  [3/3] 正在启动 BaiLu DeployPilot…"
+printf '\n' >&2
 exec "$bin" "$@"
