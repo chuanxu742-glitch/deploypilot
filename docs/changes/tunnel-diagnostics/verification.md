@@ -54,3 +54,20 @@
 - 未升级默认 cloudflared，未改变 120 秒等待、5 次失败策略或连接成功判据。
 - 本机安装已更新；在线安装脚本仍获取线上旧版，重新执行该脚本会覆盖本地诊断版。本次没有推送或公开发布。
 - 下一项能区分剩余原因的检查是换一个代理出口或网络做相同握手对照；当前节点和本机全局配置保持原状。
+
+## v0.4.10 发布补记（2026-11-02）
+
+上面的“尚未推送或发布”为诊断修复阶段的记录。用户随后明确授权推送和发布，现已完成 [v0.4.10](https://github.com/chuanxu742-glitch/deploypilot/releases/tag/v0.4.10)，代码和 tag 仍对应已验证提交 `5f9899a55f4f66fe9bab979ab0b624f55a06f319`；本补记不改变该 tag。
+
+| 结论 | 验证方式 | 结果与局限 |
+|---|---|---|
+| 发布构建成功 | `npm --prefix web run build`、`client/build.ps1 -Version v0.4.10` | 均退出 0；Windows amd64、Linux amd64/arm64 构建完成。前端存在非阻断的包体积提示。首次构建输出记录使用相对路径失败，改绝对路径后重跑成功；原始记录 `release-web-build.log`、`release-build.log`。 |
+| 发布来源与本地文件一致 | 三份程序 `go version -m`、本地校验表、草稿资产 digest/size 比对 | 全部为 v0.4.10、指定源码提交且 `vcs.modified=false`；六份文件核对一致后才公开。`release-manifest.json`、`release-draft-verified.json`。 |
+| 原 latest 下载入口已更新 | 读取 releases/latest、远端 tag，分别从公开 latest/download 下载六份文件 | latest 为 v0.4.10、tag 指向修复提交；六个实际下载内容的 SHA-256 与构建一致，记录 `release-public-downloads.json`。 |
+| 原 Windows 安装命令可用 | 在 Windows PowerShell 5.1 正常模块环境执行原 `irm .../releases/latest/download/install.ps1 \| iex` 命令，使用默认安装目录 | `[2/3] SHA-256 verified.`，启动画面显示 v0.4.10，安装文件哈希与发布文件相同；观察到启动后关闭测试进程。记录 `original-install-command-retry.log`、`release-install-verification-retry.json`。 |
+
+Windows 发布程序 SHA-256：`ebe101a0d03dbca62c9f0a4d0da5384a71d694d0d079cec0428b43e559b24557`。本机旧诊断版保存在 `.probe-tmp/tunnel-diagnostics/installed-before-v0.4.10.exe`。原始文件均在 `.probe-tmp/tunnel-diagnostics/`。
+
+首次验收失败并非成功记录：辅助程序继承的 PowerShell 7 模块路径使 Windows PowerShell 5.1 无法加载 Get-FileHash；正常 5.1 模块路径的对照退出 0，再执行完整安装成功。记录 `original-install-command.log`、`release-install-verification.json`、`powershell-environment-check-corrected.json`。只调整测试子进程环境，未改系统模块路径和安装脚本。
+
+Linux 两个架构做了构建和实际公开文件下载校验，未在 Linux 主机执行安装或运行。本次发布仍不声称代理网络握手已恢复。
