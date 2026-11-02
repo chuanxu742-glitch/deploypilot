@@ -103,7 +103,7 @@ func run() (runErr error) {
 	}
 
 	progress := intro.StartProgress("正在准备连接组件")
-	defer progress.Finish("")
+	defer func() { progress.Finish("") }()
 	binPath, err := tunnel.EnsureBinary(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -144,7 +144,12 @@ func run() (runErr error) {
 		Unavailable: func() { pairingURL.Store(nil); authMgr.RevokeAll() },
 		Retry: func(cause error, delay time.Duration) {
 			if !connected {
-				progress.Set(fmt.Sprintf("连接暂不可用：%v · %s 后重试", cause, delay.Round(time.Second)))
+				// Animated progress clips to the terminal width. Finish it before
+				// printing diagnostics so the underlying error and log path survive.
+				progress.Finish("")
+				fmt.Print("\n" + banner.Status(bannerOpts, banner.ToneWarning,
+					fmt.Sprintf("连接暂不可用，%s 后重试", delay.Round(time.Second)), cause.Error()))
+				progress = intro.StartProgress("正在重试安全隧道")
 				return
 			}
 			fmt.Print("\n" + banner.Status(bannerOpts, banner.ToneWarning,

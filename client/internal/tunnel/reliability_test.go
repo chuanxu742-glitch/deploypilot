@@ -29,6 +29,12 @@ func TestMain(m *testing.M) {
 		if mode == "exit" {
 			os.Exit(0)
 		}
+		if mode == "diagnostic-no-url" {
+			fmt.Fprintln(os.Stderr, "2026-11-02T00:00:00Z ERR quick tunnel API request failed")
+			for {
+				time.Sleep(time.Second)
+			}
+		}
 		if mode == "flood" {
 			fmt.Fprint(os.Stdout, strings.Repeat("x", 2*1024*1024)+"\n")
 		}
@@ -37,6 +43,16 @@ func TestMain(m *testing.M) {
 			out = os.Stderr
 		}
 		fmt.Fprintln(out, "https://local-test.trycloudflare.com")
+		if mode == "diagnostic-exit" {
+			fmt.Fprintln(os.Stderr, `2026-11-02T00:00:00Z ERR Unable to establish connection error="TLS handshake with edge error: EOF"`)
+			os.Exit(7)
+		}
+		if mode == "diagnostic-timeout" {
+			fmt.Fprintln(os.Stderr, `2026-11-02T00:00:00Z ERR TLS handshake with edge error: EOF`)
+			for {
+				time.Sleep(time.Second)
+			}
+		}
 		if mode != "not-ready" {
 			time.Sleep(200 * time.Millisecond)
 			if pidfile != "" {
@@ -54,7 +70,35 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestStartReportsUnderlyingErrorAfterURL(t *testing.T) {
+	t.Setenv("DP_TEST_TUNNEL_PROCESS", "diagnostic-exit")
+	setDiagnosticTestHome(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err = Start(ctx, exe, 12345)
+	if err == nil || !strings.Contains(err.Error(), "TLS handshake with edge error: EOF") {
+		t.Fatalf("need underlying error after the URL, got %v", err)
+	}
+	home, _ := os.UserHomeDir()
+	files, _ := filepath.Glob(filepath.Join(home, ".deploypilot", "logs", "tunnel-*.log"))
+	if len(files) != 1 {
+		t.Fatalf("need one retained diagnostic log, got %v", files)
+	}
+	data, readErr := os.ReadFile(files[0])
+	if readErr != nil || !strings.Contains(string(data), "TLS handshake with edge error: EOF") {
+		t.Fatalf("missing persistent underlying error: %q, %v", data, readErr)
+	}
+	if !strings.Contains(err.Error(), files[0]) {
+		t.Fatalf("error does not point to log %s: %v", files[0], err)
+	}
+}
+
 func TestStartDrainsBothStreamsAndLargeLines(t *testing.T) {
+	setDiagnosticTestHome(t)
 	for _, mode := range []string{"stdout", "flood"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("DP_TEST_TUNNEL_PROCESS", mode)
@@ -83,6 +127,7 @@ func TestStartDrainsBothStreamsAndLargeLines(t *testing.T) {
 }
 
 func TestStartURLAloneIsNotReady(t *testing.T) {
+	setDiagnosticTestHome(t)
 	t.Setenv("DP_TEST_TUNNEL_PROCESS", "not-ready")
 	exe, _ := os.Executable()
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
@@ -97,6 +142,7 @@ func TestStartURLAloneIsNotReady(t *testing.T) {
 }
 
 func TestStartEarlyCleanExitIsError(t *testing.T) {
+	setDiagnosticTestHome(t)
 	t.Setenv("DP_TEST_TUNNEL_PROCESS", "exit")
 	exe, _ := os.Executable()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

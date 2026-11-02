@@ -28,12 +28,19 @@ type Tunnel struct {
 	owner  io.Closer
 	mu     sync.Mutex
 	err    error
+	logs   *diagnosticLog
 }
 
 // Start launches cloudflared to expose http://127.0.0.1:<localPort> and
 // waits for both a URL and cloudflared's first successful edge connection.
 // This does not guarantee that public DNS/routing has propagated everywhere.
+// Process diagnostics remain in ~/.deploypilot/logs; failures include their
+// path and recent underlying error when available.
 func Start(ctx context.Context, binPath string, localPort int) (*Tunnel, error) {
+	return startWithTimeout(ctx, binPath, localPort, 120*time.Second)
+}
+
+func startWithTimeout(ctx context.Context, binPath string, localPort int, timeout time.Duration) (*Tunnel, error) {
 	dir, err := os.MkdirTemp("", "deploypilot-tunnel-*")
 	if err != nil {
 		return nil, err
@@ -52,8 +59,9 @@ func Start(ctx context.Context, binPath string, localPort int) (*Tunnel, error) 
 	// The same writer lets os/exec drain both streams and join its copy goroutines
 	// before Wait returns. Reading stderr then stdout can deadlock the child.
 	urlCh := make(chan string, 1)
-	logs := &urlCapture{out: urlCh}
-	cmd.Stdout, cmd.Stderr = logs, logs
+	logs := newDiagnosticLog()
+	output := io.MultiWriter(&urlCapture{out: urlCh}, logs)
+	cmd.Stdout, cmd.Stderr = output, output
 	cmd.WaitDelay = 2 * time.Second
 
 	// Bind cloudflared's lifetime to this process: if DeployPilot is killed
@@ -62,13 +70,15 @@ func Start(ctx context.Context, binPath string, localPort int) (*Tunnel, error) 
 	if err != nil {
 		cancel()
 		_ = os.RemoveAll(dir)
-		return nil, err
+		logs.Close()
+		return nil, logs.wrap(err)
 	}
 
-	t := &Tunnel{cmd: cmd, cancel: cancel, done: make(chan struct{}), owner: owner}
+	t := &Tunnel{cmd: cmd, cancel: cancel, done: make(chan struct{}), owner: owner, logs: logs}
 
 	go func() {
 		err := cmd.Wait()
+		logs.Close()
 		cancel()
 		_ = owner.Close()
 		_ = os.RemoveAll(dir)
@@ -78,7 +88,7 @@ func Start(ctx context.Context, binPath string, localPort int) (*Tunnel, error) 
 		close(t.done)
 	}()
 
-	deadline := time.NewTimer(120 * time.Second)
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	poll := time.NewTicker(100 * time.Millisecond)
 	defer poll.Stop()
@@ -110,7 +120,11 @@ func Start(ctx context.Context, binPath string, localPort int) (*Tunnel, error) 
 			return nil, t.exitError()
 		case <-deadline.C:
 			t.Close()
-			return nil, errors.New("timed out waiting for tunnel URL and first edge connection (120s)")
+			stage := "tunnel URL"
+			if t.URL != "" {
+				stage = "first edge connection; tunnel URL received"
+			}
+			return nil, logs.wrap(fmt.Errorf("timed out waiting for %s (%s)", stage, timeout))
 		case <-ctx.Done():
 			t.Close()
 			return nil, ctx.Err()
@@ -152,9 +166,9 @@ func (w *urlCapture) Write(p []byte) (int, error) {
 
 func (t *Tunnel) exitError() error {
 	if err := t.Err(); err != nil {
-		return fmt.Errorf("cloudflared exited: %w", err)
+		return t.logs.wrap(fmt.Errorf("cloudflared exited: %w", err))
 	}
-	return errors.New("cloudflared exited unexpectedly (exit status 0)")
+	return t.logs.wrap(errors.New("cloudflared exited unexpectedly (exit status 0)"))
 }
 
 // Done returns a channel closed when the tunnel process exits.
