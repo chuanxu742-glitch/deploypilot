@@ -1,14 +1,14 @@
-DeployPilot UTF-8 live output: AFTER
+DeployPilot UTF-8 task output: AFTER
 Base main: 9d5114c14a988966f9c68865c91338a42962f8bf
-Linux, Go 1.27.3; actual process/PTY -> production JSON -> paired WebSocket.
-Exact observations excerpted from tests-after.txt; not browser UI/E2E.
-unicode_stream_test.go:107: executor=shared source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
-unicode_stream_test.go:107: executor=shared source="[begin]é[end]" terminal="[begin]é[end]" exit=0
-unicode_stream_test.go:107: executor=shared source="[begin]中[end]" terminal="[begin]中[end]" exit=0
-unicode_stream_test.go:107: executor=shared source="[begin]🌍[end]" terminal="[begin]🌍[end]" exit=0
-unicode_stream_test.go:107: executor=standalone source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
-unicode_stream_test.go:107: executor=standalone source="[begin]é[end]" terminal="[begin]é[end]" exit=0
-unicode_stream_test.go:107: executor=standalone source="[begin]中[end]" terminal="[begin]中[end]" exit=0
-unicode_stream_test.go:107: executor=standalone source="[begin]🌍[end]" terminal="[begin]🌍[end]" exit=0
-PASS: all 8 real-process + WebSocket cases
-No external model, tunnel, deployment, or MachineInfo probe was run.
+Linux, Go 1.27.3; real process/PTY -> emitTask JSON -> paired /ws/agent.
+Exact observations from task-tests-after.txt; not product UI/E2E.
+unicode_task_stream_test.go:110: executor=shared source="[begin]ASCII[end]" live_task_json="[begin]ASCII[end]" exit=0
+unicode_task_stream_test.go:110: executor=shared source="[begin]é[end]" live_task_json="[begin]é[end]" exit=0
+unicode_task_stream_test.go:110: executor=shared source="[begin]中[end]" live_task_json="[begin]中[end]" exit=0
+unicode_task_stream_test.go:110: executor=shared source="[begin]🌍[end]" live_task_json="[begin]🌍[end]" exit=0
+unicode_task_stream_test.go:110: executor=standalone source="[begin]ASCII[end]" live_task_json="[begin]ASCII[end]" exit=0
+unicode_task_stream_test.go:110: executor=standalone source="[begin]é[end]" live_task_json="[begin]é[end]" exit=0
+unicode_task_stream_test.go:110: executor=standalone source="[begin]中[end]" live_task_json="[begin]中[end]" exit=0
+unicode_task_stream_test.go:110: executor=standalone source="[begin]🌍[end]" live_task_json="[begin]🌍[end]" exit=0
+PASS: all 8 real-process + task WebSocket cases
+No model, tunnel, deployment, or MachineInfo probe. Raw PTY display not tested.

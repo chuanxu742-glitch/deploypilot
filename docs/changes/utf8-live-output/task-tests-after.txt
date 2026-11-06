@@ -1,0 +1,28 @@
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/ASCII
+    unicode_task_stream_test.go:110: executor=shared source="[begin]ASCII[end]" live_task_json="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/é
+    unicode_task_stream_test.go:110: executor=shared source="[begin]é[end]" live_task_json="[begin]é[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/中
+    unicode_task_stream_test.go:110: executor=shared source="[begin]中[end]" live_task_json="[begin]中[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/🌍
+    unicode_task_stream_test.go:110: executor=shared source="[begin]🌍[end]" live_task_json="[begin]🌍[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/ASCII
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]ASCII[end]" live_task_json="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/é
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]é[end]" live_task_json="[begin]é[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/中
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]中[end]" live_task_json="[begin]中[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/🌍
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]🌍[end]" live_task_json="[begin]🌍[end]" exit=0
+--- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket (1.37s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/ASCII (0.25s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/é (0.13s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/中 (0.17s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/🌍 (0.21s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/ASCII (0.22s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/é (0.09s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/中 (0.13s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/🌍 (0.18s)
+PASS
+ok  	github.com/deploypilot/deploypilot/internal/server	2.388s
