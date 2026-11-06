@@ -386,7 +386,10 @@ try {
 		// Reset shell options first so a previous command's leaked -e/-u/pipefail
 		// cannot abort this one. The command's own options still apply within it.
 		script = "set +e +u +o pipefail 2>/dev/null\n" + "eval \"$(printf %s '" + encoded + "' | base64 -d)\"\n" + code + "=$?\nprintf '%s\\n%s' \"$" + code + "\" \"$PWD\" > " + shellQuote(resultPath) + "\nunset " + code + "\n"
-		input = ". " + shellQuote(scriptPath) + "; printf '\\033]777;" + id + "\\007'\n"
+		// A command may persistently redirect or close stdout/stderr. Send the
+		// completion marker to the controlling PTY so it still follows all prior
+		// terminal output without changing the command's chosen stream state.
+		input = ". " + shellQuote(scriptPath) + "; printf '\\033]777;" + id + "\\007' > /dev/tty\n"
 	}
 	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
 		return -1, "", err
