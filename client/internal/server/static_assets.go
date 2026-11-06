@@ -59,7 +59,15 @@ func acceptsGzip(r *http.Request) bool {
 	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
 		coding, params, _ := strings.Cut(strings.TrimSpace(part), ";")
 		if strings.EqualFold(strings.TrimSpace(coding), "gzip") {
-			return strings.TrimSpace(strings.ReplaceAll(params, " ", "")) != "q=0"
+			for _, parameter := range strings.Split(params, ";") {
+				name, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+				if ok && strings.EqualFold(strings.TrimSpace(name), "q") {
+					// Zero quality also has valid decimal forms such as q=0.000.
+					quality, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+					return err == nil && quality > 0 && quality <= 1
+				}
+			}
+			return true
 		}
 	}
 	return false
