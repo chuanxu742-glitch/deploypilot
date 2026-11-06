@@ -1,0 +1,35 @@
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/ASCII
+    unicode_stream_test.go:107: executor=shared source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/é
+    unicode_stream_test.go:107: executor=shared source="[begin]é[end]" terminal="[begin]��[end]" exit=0
+    unicode_stream_test.go:112: valid UTF-8 command output corrupted by production terminal WebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/中
+    unicode_stream_test.go:107: executor=shared source="[begin]中[end]" terminal="[begin]���[end]" exit=0
+    unicode_stream_test.go:112: valid UTF-8 command output corrupted by production terminal WebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/🌍
+    unicode_stream_test.go:107: executor=shared source="[begin]🌍[end]" terminal="[begin]����[end]" exit=0
+    unicode_stream_test.go:112: valid UTF-8 command output corrupted by production terminal WebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/ASCII
+    unicode_stream_test.go:107: executor=standalone source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/é
+    unicode_stream_test.go:107: executor=standalone source="[begin]é[end]" terminal="[begin]��[end]" exit=0
+    unicode_stream_test.go:112: valid UTF-8 command output corrupted by production terminal WebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/中
+    unicode_stream_test.go:107: executor=standalone source="[begin]中[end]" terminal="[begin]���[end]" exit=0
+    unicode_stream_test.go:112: valid UTF-8 command output corrupted by production terminal WebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/🌍
+    unicode_stream_test.go:107: executor=standalone source="[begin]🌍[end]" terminal="[begin]����[end]" exit=0
+    unicode_stream_test.go:112: valid UTF-8 command output corrupted by production terminal WebSocket
+--- FAIL: TestCommandOutputUTF8SurvivesTerminalWebSocket (1.45s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/ASCII (0.25s)
+    --- FAIL: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/é (0.12s)
+    --- FAIL: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/中 (0.16s)
+    --- FAIL: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/🌍 (0.20s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/ASCII (0.24s)
+    --- FAIL: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/é (0.11s)
+    --- FAIL: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/中 (0.15s)
+    --- FAIL: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/🌍 (0.20s)
+FAIL
+FAIL	github.com/deploypilot/deploypilot/internal/server	1.457s
+FAIL

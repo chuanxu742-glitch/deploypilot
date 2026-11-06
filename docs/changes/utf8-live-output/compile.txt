@@ -1,0 +1,5 @@
+gofmt: PASS
+go vet: PASS
+Windows agent compile: PASS
+Windows server compile: PASS
+Final added task test: go vet and Windows server compile PASS

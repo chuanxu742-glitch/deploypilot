@@ -1,0 +1,32 @@
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout
+--- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand (1.44s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel (0.06s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout (0.61s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel (0.11s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout (0.66s)
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout
+--- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand (1.44s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel (0.06s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout (0.61s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel (0.11s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout (0.67s)
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout
+--- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand (1.44s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel (0.06s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout (0.61s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel (0.10s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout (0.67s)
+PASS
+ok  	github.com/deploypilot/deploypilot/internal/server	5.329s

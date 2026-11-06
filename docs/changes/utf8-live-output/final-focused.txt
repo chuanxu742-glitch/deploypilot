@@ -1,0 +1,160 @@
+=== RUN   TestValidUnicodeAcrossEverySplit
+=== RUN   TestValidUnicodeAcrossEverySplit/0
+=== RUN   TestValidUnicodeAcrossEverySplit/1
+=== RUN   TestValidUnicodeAcrossEverySplit/2
+=== RUN   TestValidUnicodeAcrossEverySplit/3
+=== RUN   TestValidUnicodeAcrossEverySplit/4
+=== RUN   TestValidUnicodeAcrossEverySplit/5
+=== RUN   TestValidUnicodeAcrossEverySplit/6
+=== RUN   TestValidUnicodeAcrossEverySplit/7
+=== RUN   TestValidUnicodeAcrossEverySplit/8
+=== RUN   TestValidUnicodeAcrossEverySplit/9
+=== RUN   TestValidUnicodeAcrossEverySplit/10
+=== RUN   TestValidUnicodeAcrossEverySplit/11
+=== RUN   TestValidUnicodeAcrossEverySplit/12
+=== RUN   TestValidUnicodeAcrossEverySplit/13
+=== RUN   TestValidUnicodeAcrossEverySplit/14
+=== RUN   TestValidUnicodeAcrossEverySplit/15
+=== RUN   TestValidUnicodeAcrossEverySplit/16
+=== RUN   TestValidUnicodeAcrossEverySplit/17
+=== RUN   TestValidUnicodeAcrossEverySplit/18
+=== RUN   TestValidUnicodeAcrossEverySplit/19
+=== RUN   TestValidUnicodeAcrossEverySplit/20
+=== RUN   TestValidUnicodeAcrossEverySplit/21
+=== RUN   TestValidUnicodeAcrossEverySplit/22
+=== RUN   TestValidUnicodeAcrossEverySplit/23
+=== RUN   TestValidUnicodeAcrossEverySplit/24
+=== RUN   TestValidUnicodeAcrossEverySplit/25
+=== RUN   TestValidUnicodeAcrossEverySplit/26
+=== RUN   TestValidUnicodeAcrossEverySplit/27
+=== RUN   TestValidUnicodeAcrossEverySplit/28
+=== RUN   TestValidUnicodeAcrossEverySplit/29
+=== RUN   TestValidUnicodeAcrossEverySplit/30
+=== RUN   TestValidUnicodeAcrossEverySplit/31
+--- PASS: TestValidUnicodeAcrossEverySplit (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/0 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/1 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/2 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/3 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/4 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/5 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/6 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/7 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/8 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/9 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/10 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/11 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/12 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/13 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/14 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/15 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/16 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/17 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/18 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/19 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/20 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/21 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/22 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/23 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/24 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/25 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/26 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/27 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/28 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/29 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/30 (0.00s)
+    --- PASS: TestValidUnicodeAcrossEverySplit/31 (0.00s)
+=== RUN   TestBytewiseAndIncompleteCompletion
+=== RUN   TestBytewiseAndIncompleteCompletion/c3a9e4b8adf09f8c8d
+=== RUN   TestBytewiseAndIncompleteCompletion/68656c6c6f
+=== RUN   TestBytewiseAndIncompleteCompletion/#00
+=== RUN   TestBytewiseAndIncompleteCompletion/626164ff6279746573
+=== RUN   TestBytewiseAndIncompleteCompletion/7061727469616ce4b8
+--- PASS: TestBytewiseAndIncompleteCompletion (0.00s)
+    --- PASS: TestBytewiseAndIncompleteCompletion/c3a9e4b8adf09f8c8d (0.00s)
+    --- PASS: TestBytewiseAndIncompleteCompletion/68656c6c6f (0.00s)
+    --- PASS: TestBytewiseAndIncompleteCompletion/#00 (0.00s)
+    --- PASS: TestBytewiseAndIncompleteCompletion/626164ff6279746573 (0.00s)
+    --- PASS: TestBytewiseAndIncompleteCompletion/7061727469616ce4b8 (0.00s)
+=== RUN   TestASCIIIsNotBufferedBehindCompletion
+--- PASS: TestASCIIIsNotBufferedBehindCompletion (0.00s)
+=== RUN   TestConcurrentPushAndCloseRemainValid
+--- PASS: TestConcurrentPushAndCloseRemainValid (0.00s)
+=== RUN   TestNilCallback
+--- PASS: TestNilCallback (0.00s)
+PASS
+ok  	github.com/deploypilot/deploypilot/internal/outputstream	1.019s
+=== RUN   TestSharedShellKeepsDirectoryEnvironmentAndManualInput
+--- PASS: TestSharedShellKeepsDirectoryEnvironmentAndManualInput (0.11s)
+=== RUN   TestSharedShellRestoresDirectoryAndHistory
+--- PASS: TestSharedShellRestoresDirectoryAndHistory (0.24s)
+=== RUN   TestSharedShellExitStatusAndCancellation
+--- PASS: TestSharedShellExitStatusAndCancellation (2.37s)
+=== RUN   TestSessionExecutorRelativeFilesFollowShell
+--- PASS: TestSessionExecutorRelativeFilesFollowShell (0.04s)
+=== RUN   TestTerminalWebSocketReceivesAgentExecution
+--- PASS: TestTerminalWebSocketReceivesAgentExecution (0.03s)
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel
+=== RUN   TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout
+--- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand (1.43s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/cancel (0.05s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/standalone/timeout (0.61s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/cancel (0.10s)
+    --- PASS: TestPartialUTF8CancellationDoesNotLeakIntoNextCommand/shared/timeout (0.67s)
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/ASCII
+    unicode_stream_test.go:107: executor=shared source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/é
+    unicode_stream_test.go:107: executor=shared source="[begin]é[end]" terminal="[begin]é[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/中
+    unicode_stream_test.go:107: executor=shared source="[begin]中[end]" terminal="[begin]中[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/🌍
+    unicode_stream_test.go:107: executor=shared source="[begin]🌍[end]" terminal="[begin]🌍[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/ASCII
+    unicode_stream_test.go:107: executor=standalone source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/é
+    unicode_stream_test.go:107: executor=standalone source="[begin]é[end]" terminal="[begin]é[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/中
+    unicode_stream_test.go:107: executor=standalone source="[begin]中[end]" terminal="[begin]中[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/🌍
+    unicode_stream_test.go:107: executor=standalone source="[begin]🌍[end]" terminal="[begin]🌍[end]" exit=0
+--- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket (1.45s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/ASCII (0.25s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/é (0.13s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/中 (0.16s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/shared/🌍 (0.21s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/ASCII (0.24s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/é (0.11s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/中 (0.15s)
+    --- PASS: TestCommandOutputUTF8SurvivesTerminalWebSocket/standalone/🌍 (0.20s)
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/ASCII
+    unicode_task_stream_test.go:110: executor=shared source="[begin]ASCII[end]" live_task_json="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/é
+    unicode_task_stream_test.go:110: executor=shared source="[begin]é[end]" live_task_json="[begin]é[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/中
+    unicode_task_stream_test.go:110: executor=shared source="[begin]中[end]" live_task_json="[begin]中[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/shared/🌍
+    unicode_task_stream_test.go:110: executor=shared source="[begin]🌍[end]" live_task_json="[begin]🌍[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/ASCII
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]ASCII[end]" live_task_json="[begin]ASCII[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/é
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]é[end]" live_task_json="[begin]é[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/中
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]中[end]" live_task_json="[begin]中[end]" exit=0
+=== RUN   TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/🌍
+    unicode_task_stream_test.go:110: executor=standalone source="[begin]🌍[end]" live_task_json="[begin]🌍[end]" exit=0
+--- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket (1.36s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/ASCII (0.25s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/é (0.13s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/中 (0.17s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/shared/🌍 (0.21s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/ASCII (0.22s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/é (0.09s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/中 (0.13s)
+    --- PASS: TestCommandOutputUTF8SurvivesTaskWebSocket/standalone/🌍 (0.18s)
+PASS
+ok  	github.com/deploypilot/deploypilot/internal/server	8.049s
