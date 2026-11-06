@@ -131,7 +131,7 @@ func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, 
 	if offset < 0 {
 		offset = 0
 	}
-	f, err := os.Open(path)
+	f, err := openReadFile(path)
 	if err != nil {
 		return ReadResult{}, err
 	}
@@ -142,6 +142,11 @@ func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, 
 	}
 	if info.IsDir() {
 		return ReadResult{}, fmt.Errorf("%s is a directory; use run_command (ls) instead", path)
+	}
+	// Check the opened descriptor, not only the path: a symlink or path can
+	// change between a preflight stat and open. Never read devices or pipes.
+	if !info.Mode().IsRegular() {
+		return ReadResult{}, fmt.Errorf("%s is not a regular file; read_file does not read devices or pipes", path)
 	}
 	size := info.Size()
 	if offset > 0 {
