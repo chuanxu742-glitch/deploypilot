@@ -27,4 +27,6 @@ npm run build
 
 [before.txt](before.txt) 和 [after.txt](after.txt) 为实际生产 TypeScript 函数运行输出；详细日志见 [基线](unicode-baseline.log)、[PR #2 基线](unicode-pr2-baseline.log)、[修复](unicode-fixed.log)、[全前端测试](web-tests.log)、[构建](web-build.log)、[格式](format-check.log)。
 
+实际 GitHub 日志页面截图：[修复前](before-github.jpg)、[修复后](after-github.jpg)，拍摄于提交 `ad5d4b9a80ee6241c166381e5395794425656337`，原生未编辑 JPEG，1197×807。不是产品 UI 截图。
+
 浏览器验证曾尝试，但 Chromium 在页面加载前因 socket 权限及只读 crash-report 配置失败。未重试、未提升权限、未更改安全设置，没有取得 DOM 或产品 UI 截图。此处不宣称浏览器 E2E、真实后端、模型调用或部署通过；截图仅为实际 GitHub 测试日志页面。未运行 Go 后端全库测试。
