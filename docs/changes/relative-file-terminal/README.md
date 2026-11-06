@@ -80,4 +80,12 @@ go test ./internal/server -run '^(TestSessionExecutor.*|TestAgentRelativeFileErr
 
 ## 截图
 
-截图尚在准备中。当前可核对完整文本日志；取得实际浏览器截图后再添加，不以生成图片或排版渲染代替截图。
+以下是浏览器实际打开提交 `22158b91bc30a7bed0d1fc9982bc3204c68514ab` 的 GitHub 日志页面后的截图，已目视核对。不是应用 UI、生成图片或部署现场。浏览器宽度使部分长行右端未显示，完整内容见文本日志。
+
+![修复前真实日志截图](before.jpg)
+
+![修复后真实日志截图](after.jpg)
+
+截图 SHA-256：
+- before.jpg: `dc0ace6d1b9e325dd4a6e526a0303543d49f38af005d3922558f9a53067c32c9`
+- after.jpg: `074215d3d9b0578e53dcc8f98465d86ac1bb2edb845da7477c1a7d0e720b3a21`
