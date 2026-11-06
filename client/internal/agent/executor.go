@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/deploypilot/deploypilot/internal/outputstream"
 )
 
 // shellCommand returns the shell invocation for the current OS.
@@ -88,7 +90,8 @@ func (shellExecutor) Run(ctx context.Context, command string, timeout time.Durat
 
 	var buf cappedBuffer
 	buf.limit = maxCapturedOutput
-	w := &streamWriter{onOutput: onOutput, sink: &buf}
+	w := &streamWriter{live: outputstream.New(onOutput), sink: &buf}
+	defer w.live.Close()
 	cmd.Stdout = w
 	cmd.Stderr = w
 
@@ -399,13 +402,11 @@ func (c *cappedBuffer) String() string {
 
 // streamWriter forwards writes to a live callback and a capped sink.
 type streamWriter struct {
-	onOutput func(string)
-	sink     *cappedBuffer
+	live *outputstream.Stream
+	sink *cappedBuffer
 }
 
 func (w *streamWriter) Write(p []byte) (int, error) {
-	if w.onOutput != nil {
-		w.onOutput(string(p))
-	}
+	w.live.Push(string(p))
 	return w.sink.Write(p)
 }

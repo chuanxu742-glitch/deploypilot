@@ -1,0 +1,14 @@
+DeployPilot UTF-8 live output: BEFORE
+Base main: 9d5114c14a988966f9c68865c91338a42962f8bf
+Linux, Go 1.27.3; actual process/PTY -> production JSON -> paired WebSocket.
+Exact observations excerpted from tests-before.txt; not browser UI/E2E.
+unicode_stream_test.go:107: executor=shared source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
+unicode_stream_test.go:107: executor=shared source="[begin]é[end]" terminal="[begin]��[end]" exit=0
+unicode_stream_test.go:107: executor=shared source="[begin]中[end]" terminal="[begin]���[end]" exit=0
+unicode_stream_test.go:107: executor=shared source="[begin]🌍[end]" terminal="[begin]����[end]" exit=0
+unicode_stream_test.go:107: executor=standalone source="[begin]ASCII[end]" terminal="[begin]ASCII[end]" exit=0
+unicode_stream_test.go:107: executor=standalone source="[begin]é[end]" terminal="[begin]��[end]" exit=0
+unicode_stream_test.go:107: executor=standalone source="[begin]中[end]" terminal="[begin]���[end]" exit=0
+unicode_stream_test.go:107: executor=standalone source="[begin]🌍[end]" terminal="[begin]����[end]" exit=0
+FAIL: 6 Unicode cases; PASS: 2 ASCII controls
+No external model, tunnel, deployment, or MachineInfo probe was run.

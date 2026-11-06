@@ -1,0 +1,4 @@
+gofmt: PASS
+go vet: PASS
+Windows agent compile: PASS
+Windows server compile: PASS

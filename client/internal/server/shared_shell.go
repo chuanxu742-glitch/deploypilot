@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/deploypilot/deploypilot/internal/outputstream"
 	"github.com/deploypilot/deploypilot/internal/pty"
 )
 
@@ -394,15 +395,19 @@ try {
 	captured := &boundedOutput{halfLimit: 16 * 1024}
 	var captureMu sync.Mutex
 	completed := make(chan struct{})
+	var emit func(string)
+	if onOutput != nil && runtime.GOOS != "windows" {
+		emit = func(data string) { onOutput(terminalEscapes.ReplaceAllString(data, "")) }
+	}
+	live := outputstream.New(emit)
+	defer live.Close()
 	s.mu.Lock()
 	s.marker, s.markerTail, s.completed = "\x1b]777;"+id+"\x07", "", completed
 	s.output = func(data string) {
 		captureMu.Lock()
 		defer captureMu.Unlock()
 		captured.WriteString(data)
-		if onOutput != nil && runtime.GOOS != "windows" {
-			onOutput(terminalEscapes.ReplaceAllString(data, ""))
-		}
+		live.Push(data)
 	}
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.output = nil; s.mu.Unlock() }()
