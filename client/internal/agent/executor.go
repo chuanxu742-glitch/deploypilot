@@ -166,6 +166,12 @@ func (shellExecutor) ReadFile(path string, offset, maxBytes int64) (ReadResult, 
 			if utf8.RuneStart(buf[n-back]) {
 				if !utf8.FullRune(buf[n-back : n]) {
 					n -= back
+					if n == 0 {
+						// A successful page must advance next_offset. Keep the
+						// requested byte cap rather than returning a partial rune
+						// or silently asking the caller to repeat the same read.
+						return ReadResult{}, fmt.Errorf("max_bytes=%d is too small for a UTF-8 character at offset %d; retry with max_bytes >= %d", maxBytes, offset, utf8.UTFMax)
+					}
 				}
 				break
 			}

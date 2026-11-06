@@ -1,0 +1,37 @@
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/é!/1
+    read_file_progress_test.go:26: max_bytes=1 content="" next_offset=0 eof=false error=max_bytes=1 is too small for a UTF-8 character at offset 0; retry with max_bytes >= 4
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/世界/1
+    read_file_progress_test.go:26: max_bytes=1 content="" next_offset=0 eof=false error=max_bytes=1 is too small for a UTF-8 character at offset 0; retry with max_bytes >= 4
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/世界/2
+    read_file_progress_test.go:26: max_bytes=2 content="" next_offset=0 eof=false error=max_bytes=2 is too small for a UTF-8 character at offset 0; retry with max_bytes >= 4
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/😀!/1
+    read_file_progress_test.go:26: max_bytes=1 content="" next_offset=0 eof=false error=max_bytes=1 is too small for a UTF-8 character at offset 0; retry with max_bytes >= 4
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/😀!/2
+    read_file_progress_test.go:26: max_bytes=2 content="" next_offset=0 eof=false error=max_bytes=2 is too small for a UTF-8 character at offset 0; retry with max_bytes >= 4
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/😀!/3
+    read_file_progress_test.go:26: max_bytes=3 content="" next_offset=0 eof=false error=max_bytes=3 is too small for a UTF-8 character at offset 0; retry with max_bytes >= 4
+--- PASS: TestReadFileSmallUTF8PageReportsRecoverableError (0.00s)
+    --- PASS: TestReadFileSmallUTF8PageReportsRecoverableError/é!/1 (0.00s)
+    --- PASS: TestReadFileSmallUTF8PageReportsRecoverableError/世界/1 (0.00s)
+    --- PASS: TestReadFileSmallUTF8PageReportsRecoverableError/世界/2 (0.00s)
+    --- PASS: TestReadFileSmallUTF8PageReportsRecoverableError/😀!/1 (0.00s)
+    --- PASS: TestReadFileSmallUTF8PageReportsRecoverableError/😀!/2 (0.00s)
+    --- PASS: TestReadFileSmallUTF8PageReportsRecoverableError/😀!/3 (0.00s)
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/empty
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/ascii
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/two_byte
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/three_byte
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/four_byte
+--- PASS: TestReadFileSmallPagesPreserveProgressAndEOF (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/empty (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/ascii (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/two_byte (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/three_byte (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/four_byte (0.00s)
+=== RUN   TestReadFileToolReportsStalledPageAndRecovers
+    read_file_progress_test.go:101: read_file(offset=1, max_bytes=2): error: max_bytes=2 is too small for a UTF-8 character at offset 1; retry with max_bytes >= 4
+--- PASS: TestReadFileToolReportsStalledPageAndRecovers (0.00s)
+PASS
+ok  	github.com/deploypilot/deploypilot/internal/agent	0.013s

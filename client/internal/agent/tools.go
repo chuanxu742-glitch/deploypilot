@@ -51,7 +51,7 @@ func toolSet() []llm.Tool {
 					"properties":{
 						"path":{"type":"string"},
 						"offset":{"type":"integer","description":"Byte offset to start at. Default 0."},
-						"max_bytes":{"type":"integer","description":"Max bytes to return (default 16384, hard cap 262144)."}
+						"max_bytes":{"type":"integer","description":"Max bytes to return (default 16384, hard cap 262144). Use at least 4 for UTF-8 text; a cap too small for the next character returns an error rather than a non-advancing page."}
 					},
 					"required":["path"]
 				}`),
