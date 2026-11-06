@@ -385,7 +385,11 @@ try {
 		code := "__dp_code_" + id
 		// Reset shell options first so a previous command's leaked -e/-u/pipefail
 		// cannot abort this one. The command's own options still apply within it.
-		script = "set +e +u +o pipefail 2>/dev/null\n" + "eval \"$(printf %s '" + encoded + "' | base64 -d)\"\n" + code + "=$?\nprintf '%s\\n%s' \"$" + code + "\" \"$PWD\" > " + shellQuote(resultPath) + "\nunset " + code + "\n"
+		// The command already lives in this private script, not on the terminal
+		// input line. Quote it for eval directly: decoding through PATH can fail
+		// after an earlier command changes PATH, and eval of that empty decoded
+		// string would incorrectly report success without executing anything.
+		script = "set +e +u +o pipefail 2>/dev/null\n" + "eval " + shellQuote(command) + "\n" + code + "=$?\nprintf '%s\\n%s' \"$" + code + "\" \"$PWD\" > " + shellQuote(resultPath) + "\nunset " + code + "\n"
 		input = ". " + shellQuote(scriptPath) + "; printf '\\033]777;" + id + "\\007'\n"
 	}
 	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
