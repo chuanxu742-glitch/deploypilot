@@ -1,0 +1,20 @@
+Go version:
+go version go1.27.3 linux/amd64
+Base:
+9d5114c14a988966f9c68865c91338a42962f8bf
+go vet ./...
+go test ./... -count=1
+ok  	github.com/deploypilot/deploypilot/cmd/deploypilot	0.008s
+ok  	github.com/deploypilot/deploypilot/internal/agent	8.119s
+ok  	github.com/deploypilot/deploypilot/internal/auth	0.262s
+ok  	github.com/deploypilot/deploypilot/internal/banner	0.007s
+ok  	github.com/deploypilot/deploypilot/internal/console	0.007s
+ok  	github.com/deploypilot/deploypilot/internal/llm	1.541s
+ok  	github.com/deploypilot/deploypilot/internal/pty	0.009s
+ok  	github.com/deploypilot/deploypilot/internal/server	5.529s
+ok  	github.com/deploypilot/deploypilot/internal/tunnel	1.532s
+?   	github.com/deploypilot/deploypilot/internal/webui	[no test files]
+go test ./internal/agent -run TestReadFile -race -count=5
+ok  	github.com/deploypilot/deploypilot/internal/agent	1.059s
+Windows amd64 build
+Linux arm64 build

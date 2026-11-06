@@ -1,0 +1,46 @@
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/é!/1
+    read_file_progress_test.go:26: max_bytes=1 content="" next_offset=0 eof=false error=<nil>
+    read_file_progress_test.go:28: expected actionable error instead of successful non-progressing page: result={Content: Offset:0 Size:3 NextOffset:0 EOF:false} error=<nil>
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/世界/1
+    read_file_progress_test.go:26: max_bytes=1 content="" next_offset=0 eof=false error=<nil>
+    read_file_progress_test.go:28: expected actionable error instead of successful non-progressing page: result={Content: Offset:0 Size:6 NextOffset:0 EOF:false} error=<nil>
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/世界/2
+    read_file_progress_test.go:26: max_bytes=2 content="" next_offset=0 eof=false error=<nil>
+    read_file_progress_test.go:28: expected actionable error instead of successful non-progressing page: result={Content: Offset:0 Size:6 NextOffset:0 EOF:false} error=<nil>
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/😀!/1
+    read_file_progress_test.go:26: max_bytes=1 content="" next_offset=0 eof=false error=<nil>
+    read_file_progress_test.go:28: expected actionable error instead of successful non-progressing page: result={Content: Offset:0 Size:5 NextOffset:0 EOF:false} error=<nil>
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/😀!/2
+    read_file_progress_test.go:26: max_bytes=2 content="" next_offset=0 eof=false error=<nil>
+    read_file_progress_test.go:28: expected actionable error instead of successful non-progressing page: result={Content: Offset:0 Size:5 NextOffset:0 EOF:false} error=<nil>
+=== RUN   TestReadFileSmallUTF8PageReportsRecoverableError/😀!/3
+    read_file_progress_test.go:26: max_bytes=3 content="" next_offset=0 eof=false error=<nil>
+    read_file_progress_test.go:28: expected actionable error instead of successful non-progressing page: result={Content: Offset:0 Size:5 NextOffset:0 EOF:false} error=<nil>
+--- FAIL: TestReadFileSmallUTF8PageReportsRecoverableError (0.00s)
+    --- FAIL: TestReadFileSmallUTF8PageReportsRecoverableError/é!/1 (0.00s)
+    --- FAIL: TestReadFileSmallUTF8PageReportsRecoverableError/世界/1 (0.00s)
+    --- FAIL: TestReadFileSmallUTF8PageReportsRecoverableError/世界/2 (0.00s)
+    --- FAIL: TestReadFileSmallUTF8PageReportsRecoverableError/😀!/1 (0.00s)
+    --- FAIL: TestReadFileSmallUTF8PageReportsRecoverableError/😀!/2 (0.00s)
+    --- FAIL: TestReadFileSmallUTF8PageReportsRecoverableError/😀!/3 (0.00s)
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/empty
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/ascii
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/two_byte
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/three_byte
+=== RUN   TestReadFileSmallPagesPreserveProgressAndEOF/four_byte
+--- PASS: TestReadFileSmallPagesPreserveProgressAndEOF (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/empty (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/ascii (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/two_byte (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/three_byte (0.00s)
+    --- PASS: TestReadFileSmallPagesPreserveProgressAndEOF/four_byte (0.00s)
+=== RUN   TestReadFileToolReportsStalledPageAndRecovers
+    read_file_progress_test.go:101: read_file(offset=1, max_bytes=2): [file /tmp/TestReadFileToolReportsStalledPageAndRecovers3028657835/001/text.txt | size=7 bytes | shown 1-1] more remains; read next with offset=1
+    read_file_progress_test.go:103: tool must surface a recoverable error rather than repeat the same offset: [file /tmp/TestReadFileToolReportsStalledPageAndRecovers3028657835/001/text.txt | size=7 bytes | shown 1-1] more remains; read next with offset=1
+    read_file_progress_test.go:106: non-progressing page was marked successful: [{ID:0 TaskID: Type:tool_done Text: Tool:read_file Command: Path:/tmp/TestReadFileToolReportsStalledPageAndRecovers3028657835/001/text.txt ExitCode:0 Success:true Step:1 State: Timestamp:1793958125147 CallID:read Hostname: Cwd: DurationMs:0x2c0274eee4f0} {ID:0 TaskID: Type:tool_done Text: Tool:read_file Command: Path:/tmp/TestReadFileToolReportsStalledPageAndRecovers3028657835/001/text.txt ExitCode:0 Success:true Step:1 State: Timestamp:1793958125147 CallID:read Hostname: Cwd: DurationMs:0x2c0274eee530}]
+--- FAIL: TestReadFileToolReportsStalledPageAndRecovers (0.00s)
+FAIL
+FAIL	github.com/deploypilot/deploypilot/internal/agent	0.010s
+FAIL
