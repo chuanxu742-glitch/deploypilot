@@ -1,0 +1,26 @@
+✔ theme defaults to night and preserves saved day/night/comfort (1.155013ms)
+✔ desktop split ratio stays inside usable task and terminal widths (0.171294ms)
+✔ a recoverable tool error does not finish a running task (0.18823ms)
+✔ a final summary does not release the task before cleanup acknowledgement (0.164364ms)
+✔ server acknowledgements update running and stopping states (1.218196ms)
+✔ streamed output retains its recent tail with an explicit truncation marker (0.357339ms)
+✔ event count and a single oversized message are bounded (1.572763ms)
+✔ merging output preserves boundaries around tool events (0.205796ms)
+✔ real activity and execution evidence remain distinct and grouped by call id (0.443257ms)
+✔ public assistant content remains a short progress message (0.275469ms)
+✔ tool error after completion remains attached to its call and overrides success (0.312574ms)
+✔ oversized output does not retain half a Unicode character (0.41116ms)
+✔ oversized thinking does not retain half a Unicode character (0.182721ms)
+✔ oversized final does not retain half a Unicode character (0.105737ms)
+✔ streamed and restored output preserve Unicode at clipping boundaries (2.763749ms)
+✔ streamed and restored thinking preserve Unicode at clipping boundaries (1.483971ms)
+✔ exact-limit Unicode messages are unchanged (0.177613ms)
+✔ ASCII, BMP and complete-pair clipped tails retain their full budget (0.45181ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 178.726561

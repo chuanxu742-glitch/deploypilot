@@ -66,10 +66,21 @@ export function mergeEvent(
     )
   )
     return previous;
-  const clip = (text: string) =>
-    text.length > MAX_EVENT_TEXT
-      ? TRUNCATED + text.slice(-(MAX_EVENT_TEXT - TRUNCATED.length))
-      : text;
+  const clip = (text: string) => {
+    if (text.length <= MAX_EVENT_TEXT) return text;
+    let start = text.length - (MAX_EVENT_TEXT - TRUNCATED.length);
+    // Keep the tail within budget without splitting a UTF-16 surrogate pair.
+    const before = text.charCodeAt(start - 1);
+    const after = text.charCodeAt(start);
+    if (
+      before >= 0xd800 &&
+      before <= 0xdbff &&
+      after >= 0xdc00 &&
+      after <= 0xdfff
+    )
+      start++;
+    return TRUNCATED + text.slice(start);
+  };
   const bounded =
     event.text === undefined ? event : { ...event, text: clip(event.text) };
   const last = previous[previous.length - 1];

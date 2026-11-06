@@ -1,0 +1,133 @@
+✔ theme defaults to night and preserves saved day/night/comfort (1.082435ms)
+✔ desktop split ratio stays inside usable task and terminal widths (0.238935ms)
+✔ a recoverable tool error does not finish a running task (0.123072ms)
+✔ a final summary does not release the task before cleanup acknowledgement (0.09453ms)
+✔ server acknowledgements update running and stopping states (1.074394ms)
+✔ streamed output retains its recent tail with an explicit truncation marker (0.496616ms)
+✔ event count and a single oversized message are bounded (1.799458ms)
+✔ merging output preserves boundaries around tool events (0.155881ms)
+✔ real activity and execution evidence remain distinct and grouped by call id (0.37754ms)
+✔ public assistant content remains a short progress message (0.255238ms)
+✔ tool error after completion remains attached to its call and overrides success (0.266826ms)
+✖ oversized output does not retain half a Unicode character (1.344668ms)
+✖ oversized thinking does not retain half a Unicode character (0.286365ms)
+✖ oversized final does not retain half a Unicode character (0.339283ms)
+✖ streamed and restored output preserve Unicode at clipping boundaries (0.305623ms)
+✖ streamed and restored thinking preserve Unicode at clipping boundaries (0.178105ms)
+✔ exact-limit Unicode messages are unchanged (0.106017ms)
+✔ ASCII, BMP and complete-pair clipped tails retain their full budget (0.347815ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 13
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 163.312308
+
+✖ failing tests:
+
+test at tests/agent-state.test.ts:147:3
+✖ oversized output does not retain half a Unicode character (1.344668ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///workspace/scratch/7192ccf062a7/deploypilot-1800-frontend/web/tests/agent-state.test.ts:152:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/agent-state.test.ts:147:3
+✖ oversized thinking does not retain half a Unicode character (0.286365ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///workspace/scratch/7192ccf062a7/deploypilot-1800-frontend/web/tests/agent-state.test.ts:152:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/agent-state.test.ts:147:3
+✖ oversized final does not retain half a Unicode character (0.339283ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///workspace/scratch/7192ccf062a7/deploypilot-1800-frontend/web/tests/agent-state.test.ts:152:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/agent-state.test.ts:159:3
+✖ streamed and restored output preserve Unicode at clipping boundaries (0.305623ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///workspace/scratch/7192ccf062a7/deploypilot-1800-frontend/web/tests/agent-state.test.ts:165:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/agent-state.test.ts:159:3
+✖ streamed and restored thinking preserve Unicode at clipping boundaries (0.178105ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///workspace/scratch/7192ccf062a7/deploypilot-1800-frontend/web/tests/agent-state.test.ts:165:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

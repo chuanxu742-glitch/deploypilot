@@ -4,6 +4,7 @@ import {
   applyAgentEvent,
   buildTimeline,
   mergeEvent,
+  normalizeEvents,
   MAX_EVENTS,
   MAX_EVENT_TEXT,
   TRUNCATED,
@@ -136,4 +137,68 @@ test("tool error after completion remains attached to its call and overrides suc
   const action = timeline.find((item) => item.kind === "action");
   assert.equal(action?.kind, "action");
   if (action?.kind === "action") assert.equal(action.error, "清理失败");
+});
+
+const tailLength = MAX_EVENT_TEXT - TRUNCATED.length;
+const suffix = "a".repeat(tailLength - 1);
+const prefix = "x".repeat(TRUNCATED.length);
+
+for (const type of ["output", "thinking", "final"]) {
+  test(`oversized ${type} does not retain half a Unicode character`, () => {
+    const input = prefix + "🚀" + suffix;
+    assert.equal(input.length, MAX_EVENT_TEXT + 1);
+    assert.equal(input.isWellFormed(), true);
+    const text = mergeEvent([], { type, text: input })[0].text!;
+    assert.equal(text.isWellFormed(), true);
+    assert.equal(text, TRUNCATED + suffix);
+    assert.ok(text.length <= MAX_EVENT_TEXT);
+  });
+}
+
+for (const type of ["output", "thinking"]) {
+  test(`streamed and restored ${type} preserve Unicode at clipping boundaries`, () => {
+    const deltas = [prefix + "🚀", suffix.slice(0, -1), suffix.slice(-1)];
+    const events = deltas.map((text) => ({ type, text }));
+    assert.ok(deltas.every((text) => text.isWellFormed()));
+    let live: ReturnType<typeof mergeEvent> = [];
+    for (const event of events) live = mergeEvent(live, event);
+    assert.equal(live[0].text!.isWellFormed(), true);
+    assert.equal(live[0].text, TRUNCATED + suffix);
+    assert.deepEqual(normalizeEvents(events), live);
+    for (let i = 0; i < 20; i++) {
+      live = mergeEvent(live, { type, text: "✅🚀完成" });
+      assert.equal(live[0].text!.isWellFormed(), true);
+      assert.ok(live[0].text!.length <= MAX_EVENT_TEXT);
+      assert.ok(live[0].text!.endsWith("✅🚀完成"));
+    }
+  });
+}
+
+test("exact-limit Unicode messages are unchanged", () => {
+  for (const input of [
+    "🚀".repeat(MAX_EVENT_TEXT / 2),
+    "中".repeat(MAX_EVENT_TEXT),
+    "x".repeat(MAX_EVENT_TEXT - 2) + "🚀",
+  ]) {
+    assert.equal(
+      mergeEvent([], { type: "output", text: input })[0].text,
+      input,
+    );
+  }
+});
+
+test("ASCII, BMP and complete-pair clipped tails retain their full budget", () => {
+  for (const tail of [
+    "a".repeat(tailLength),
+    "中".repeat(tailLength),
+    "🚀" + "a".repeat(tailLength - 2),
+  ]) {
+    const text = mergeEvent([], {
+      type: "output",
+      text: prefix + "xx" + tail,
+    })[0].text!;
+    assert.equal(text, TRUNCATED + tail);
+    assert.equal(text.length, MAX_EVENT_TEXT);
+    assert.equal(text.isWellFormed(), true);
+  }
 });
