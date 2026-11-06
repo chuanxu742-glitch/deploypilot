@@ -1,0 +1,11 @@
+Actual New -> Handler -> handleSPA -> serveAsset; in-memory HTTP.
+Release 5f9899a / branch base bb9524e, before; no socket or browser UI.
+GET  gzip;q=0     -> status=200, encoding=identity, body_bytes=6000
+HEAD gzip;q=0     -> status=200, encoding=identity, body_bytes=0
+GET  gzip;q=0.0   -> status=200, encoding=gzip, body_bytes=86
+HEAD gzip;q=0.0   -> status=200, encoding=gzip, body_bytes=0
+GET  gzip;q=0.00  -> status=200, encoding=gzip, body_bytes=86
+HEAD gzip;q=0.00  -> status=200, encoding=gzip, body_bytes=0
+GET  gzip;q=0.000 -> status=200, encoding=gzip, body_bytes=86
+HEAD gzip;q=0.000 -> status=200, encoding=gzip, body_bytes=0
+Expected: all zero-quality cases use identity; GET body=6000, HEAD body=0.
