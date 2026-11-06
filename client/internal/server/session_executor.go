@@ -62,23 +62,49 @@ func (e *sessionExecutor) Run(ctx context.Context, command string, timeout time.
 	defer cancel()
 	return shell.Run(ctx, command, output)
 }
-func (e *sessionExecutor) path(path string) string {
+func (e *sessionExecutor) path(path string) (string, error) {
 	if filepath.IsAbs(path) {
-		return path
+		return path, nil
 	}
-	return filepath.Join(e.WorkingDirectory(), path)
+	// A missing terminal directory must not fall back to the process cwd.
+	// WorkingDirectory is best-effort metadata and intentionally hides errors.
+	shell, err := e.server.sharedTerminal()
+	if err != nil {
+		return "", fmt.Errorf("resolve relative path %q: terminal unavailable: %w", path, err)
+	}
+	cwd := shell.Cwd()
+	if !filepath.IsAbs(cwd) {
+		return "", fmt.Errorf("resolve relative path %q: terminal working directory unavailable", path)
+	}
+	return filepath.Join(cwd, path), nil
 }
 func (e *sessionExecutor) ReadFile(path string, offset, limit int64) (agent.ReadResult, error) {
-	return e.files.ReadFile(e.path(path), offset, limit)
+	resolved, err := e.path(path)
+	if err != nil {
+		return agent.ReadResult{}, err
+	}
+	return e.files.ReadFile(resolved, offset, limit)
 }
 func (e *sessionExecutor) WriteFile(path, content string) error {
-	return e.files.WriteFile(e.path(path), content)
+	resolved, err := e.path(path)
+	if err != nil {
+		return err
+	}
+	return e.files.WriteFile(resolved, content)
 }
 func (e *sessionExecutor) AppendFile(path, content string) error {
-	return e.files.AppendFile(e.path(path), content)
+	resolved, err := e.path(path)
+	if err != nil {
+		return err
+	}
+	return e.files.AppendFile(resolved, content)
 }
 func (e *sessionExecutor) EditFile(path, old, new string, all bool) (int, error) {
-	return e.files.EditFile(e.path(path), old, new, all)
+	resolved, err := e.path(path)
+	if err != nil {
+		return 0, err
+	}
+	return e.files.EditFile(resolved, old, new, all)
 }
 func (e *sessionExecutor) MachineInfo(ctx context.Context) string {
 	command := "pwd"
