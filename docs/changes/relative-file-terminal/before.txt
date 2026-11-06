@@ -1,0 +1,61 @@
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/read
+    session_file_resolution_test.go:56: relative read returned launch-directory data: {Content:launch-directory sentinel Offset:0 Size:25 NextOffset:25 EOF:true}
+    session_file_resolution_test.go:71: must preserve terminal initialization error for /tmp/TestSessionExecutorRelativeFilesRequireTerminalread3758644352/001/terminal.json, got <nil>
+    session_file_resolution_test.go:74: read: error=<nil>; launch-directory file="launch-directory sentinel"; read error=<nil>
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/write
+    session_file_resolution_test.go:71: must preserve terminal initialization error for /tmp/TestSessionExecutorRelativeFilesRequireTerminalwrite1042741052/001/terminal.json, got <nil>
+    session_file_resolution_test.go:74: write: error=<nil>; launch-directory file="replacement"; read error=<nil>
+    session_file_resolution_test.go:80: launch-directory file changed: content="replacement"; error=<nil>
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/create
+    session_file_resolution_test.go:71: must preserve terminal initialization error for /tmp/TestSessionExecutorRelativeFilesRequireTerminalcreate683419613/001/terminal.json, got <nil>
+    session_file_resolution_test.go:74: create: error=<nil>; launch-directory file="replacement"; read error=<nil>
+    session_file_resolution_test.go:77: failed relative write created a file: content="replacement"; error=<nil>
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/append
+    session_file_resolution_test.go:71: must preserve terminal initialization error for /tmp/TestSessionExecutorRelativeFilesRequireTerminalappend255408727/001/terminal.json, got <nil>
+    session_file_resolution_test.go:74: append: error=<nil>; launch-directory file="launch-directory sentinel+append"; read error=<nil>
+    session_file_resolution_test.go:80: launch-directory file changed: content="launch-directory sentinel+append"; error=<nil>
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/edit
+    session_file_resolution_test.go:66: relative edit reported 1 replacements
+    session_file_resolution_test.go:71: must preserve terminal initialization error for /tmp/TestSessionExecutorRelativeFilesRequireTerminaledit320790165/001/terminal.json, got <nil>
+    session_file_resolution_test.go:74: edit: error=<nil>; launch-directory file="launch-directory changed"; read error=<nil>
+    session_file_resolution_test.go:80: launch-directory file changed: content="launch-directory changed"; error=<nil>
+--- FAIL: TestSessionExecutorRelativeFilesRequireTerminal (0.00s)
+    --- FAIL: TestSessionExecutorRelativeFilesRequireTerminal/read (0.00s)
+    --- FAIL: TestSessionExecutorRelativeFilesRequireTerminal/write (0.00s)
+    --- FAIL: TestSessionExecutorRelativeFilesRequireTerminal/create (0.00s)
+    --- FAIL: TestSessionExecutorRelativeFilesRequireTerminal/append (0.00s)
+    --- FAIL: TestSessionExecutorRelativeFilesRequireTerminal/edit (0.00s)
+=== RUN   TestSessionExecutorAbsoluteFilesDoNotRequireTerminal
+--- PASS: TestSessionExecutorAbsoluteFilesDoNotRequireTerminal (0.00s)
+=== RUN   TestSessionExecutorRelativeFilesRecoverWithShellDirectory
+    session_file_resolution_test.go:114: write succeeded while terminal was unavailable
+--- FAIL: TestSessionExecutorRelativeFilesRecoverWithShellDirectory (0.00s)
+=== RUN   TestAgentRelativeFileErrorsWhenTerminalUnavailable
+    session_file_service_test.go:92: real PTY changed to a separate workspace; terminal then closed and restart snapshot made unreadable
+    session_file_service_test.go:97: production Server.Start succeeded with valid task history and an unavailable terminal
+    session_file_service_test.go:117: read_file: tool_done success=true
+    session_file_service_test.go:119: read_file incorrectly reported success while terminal was unavailable
+    session_file_service_test.go:117: write_file: tool_done success=true
+    session_file_service_test.go:119: write_file incorrectly reported success while terminal was unavailable
+    session_file_service_test.go:117: append_file: tool_done success=true
+    session_file_service_test.go:119: append_file incorrectly reported success while terminal was unavailable
+    session_file_service_test.go:117: edit_file: tool_done success=true
+    session_file_service_test.go:119: edit_file incorrectly reported success while terminal was unavailable
+    session_file_service_test.go:134: read_file: want unsuccessful completion and terminal error, got completion=true terminal_error=false
+    session_file_service_test.go:137: read.txt after service run: "launch-directory sentinel"
+    session_file_service_test.go:134: write_file: want unsuccessful completion and terminal error, got completion=true terminal_error=false
+    session_file_service_test.go:137: write.txt after service run: "replacement"
+    session_file_service_test.go:139: write_file changed launch-directory file: content="replacement", error=<nil>
+    session_file_service_test.go:134: append_file: want unsuccessful completion and terminal error, got completion=true terminal_error=false
+    session_file_service_test.go:137: append.txt after service run: "launch-directory sentinel+append"
+    session_file_service_test.go:139: append_file changed launch-directory file: content="launch-directory sentinel+append", error=<nil>
+    session_file_service_test.go:134: edit_file: want unsuccessful completion and terminal error, got completion=true terminal_error=false
+    session_file_service_test.go:137: edit.txt after service run: "launch-directory changed"
+    session_file_service_test.go:139: edit_file changed launch-directory file: content="launch-directory changed", error=<nil>
+--- FAIL: TestAgentRelativeFileErrorsWhenTerminalUnavailable (0.05s)
+=== RUN   TestSessionExecutorRelativeFilesFollowShell
+--- PASS: TestSessionExecutorRelativeFilesFollowShell (0.04s)
+FAIL
+FAIL	github.com/deploypilot/deploypilot/internal/server	0.096s
+FAIL

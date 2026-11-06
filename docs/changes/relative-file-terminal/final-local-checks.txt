@@ -1,0 +1,18 @@
+=== Local-only final verification ===
+Excluded: TestMachineInfoReportsReadableProbes (existing external modelscope.cn connectivity GET) and TestLive* (opt-in external tests).
+No retry of the denied outbound connectivity probe.
+=== go vet ./... ===
+=== go test ./... -count=1 -skip ^(TestMachineInfoReportsReadableProbes|TestLive) ===
+ok  	github.com/deploypilot/deploypilot/cmd/deploypilot	0.004s
+ok  	github.com/deploypilot/deploypilot/internal/agent	3.080s
+ok  	github.com/deploypilot/deploypilot/internal/auth	0.255s
+ok  	github.com/deploypilot/deploypilot/internal/banner	0.002s
+ok  	github.com/deploypilot/deploypilot/internal/console	0.002s
+ok  	github.com/deploypilot/deploypilot/internal/llm	1.537s
+ok  	github.com/deploypilot/deploypilot/internal/pty	0.004s
+ok  	github.com/deploypilot/deploypilot/internal/server	5.614s
+ok  	github.com/deploypilot/deploypilot/internal/tunnel	1.523s
+?   	github.com/deploypilot/deploypilot/internal/webui	[no test files]
+=== targeted race repetitions: only SessionExecutor and local WebSocket provider ===
+ok  	github.com/deploypilot/deploypilot/internal/server	1.789s
+=== LOCAL-ONLY FINAL CHECKS PASSED ===

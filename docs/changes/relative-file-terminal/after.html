@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8"><title>DeployPilot | after evidence</title><style>body{margin:32px;background:#f4f6fa;color:#172033;font:16px system-ui,sans-serif}h1{font-size:27px;margin-bottom:8px}p{max-width:1250px;line-height:1.5}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:22px;border:1px solid #c9d1e1;border-radius:10px;background:white;font:14px/1.5 monospace}a{color:#185abc}.label{font-weight:700;color:#52617a}</style><h1>DeployPilot: AFTER: relative file operations return terminal errors</h1><p class="label">Real Go test output, displayed for a browser screenshot. This is not the DeployPilot application UI or a production deployment.</p><p>Base: 9d5114c14a988966f9c68865c91338a42962f8bf. Go 1.27.3, Linux amd64. Real Server.New / Server.Start / authenticated WebSocket / production file executor, with a local deterministic model endpoint and temporary files only.</p><p>A real PTY first changes to a separate workspace. After it closes, history/terminal.json is made a directory, so terminal restart fails while task history and HTTP startup succeed. Relative read/write/append/edit must not fall back to the launch directory.</p><h2>Service-level reproduction</h2><pre>=== RUN   TestAgentRelativeFileErrorsWhenTerminalUnavailable
+    session_file_service_test.go:92: real PTY changed to a separate workspace; terminal then closed and restart snapshot made unreadable
+    session_file_service_test.go:97: production Server.Start succeeded with valid task history and an unavailable terminal
+    session_file_service_test.go:117: read_file: tool_done success=false
+    session_file_service_test.go:124: read_file: resolve relative path &quot;read.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:117: write_file: tool_done success=false
+    session_file_service_test.go:124: write_file: resolve relative path &quot;write.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:117: append_file: tool_done success=false
+    session_file_service_test.go:124: append_file: resolve relative path &quot;append.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:117: edit_file: tool_done success=false
+    session_file_service_test.go:124: edit_file: resolve relative path &quot;edit.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:137: read.txt after service run: &quot;launch-directory sentinel&quot;
+    session_file_service_test.go:137: write.txt after service run: &quot;launch-directory sentinel&quot;
+    session_file_service_test.go:137: append.txt after service run: &quot;launch-directory sentinel&quot;
+    session_file_service_test.go:137: edit.txt after service run: &quot;launch-directory sentinel&quot;
+--- PASS: TestAgentRelativeFileErrorsWhenTerminalUnavailable (0.05s)
+</pre><p><a href="after.txt">Complete original output</a>, including five file-operation cases, absolute-path controls, shared-shell directory recovery, and the existing normal-directory test.</p><details><summary>Complete test output</summary><pre>=== RUN   TestSessionExecutorRelativeFilesRequireTerminal
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/read
+    session_file_resolution_test.go:74: read: error=resolve relative path &quot;read.txt&quot;: terminal unavailable: read /tmp/TestSessionExecutorRelativeFilesRequireTerminalread3682494030/001/terminal.json: is a directory; launch-directory file=&quot;launch-directory sentinel&quot;; read error=&lt;nil&gt;
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/write
+    session_file_resolution_test.go:74: write: error=resolve relative path &quot;write.txt&quot;: terminal unavailable: read /tmp/TestSessionExecutorRelativeFilesRequireTerminalwrite1145043405/001/terminal.json: is a directory; launch-directory file=&quot;launch-directory sentinel&quot;; read error=&lt;nil&gt;
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/create
+    session_file_resolution_test.go:74: create: error=resolve relative path &quot;create.txt&quot;: terminal unavailable: read /tmp/TestSessionExecutorRelativeFilesRequireTerminalcreate660388107/001/terminal.json: is a directory; launch-directory file=&quot;&quot;; read error=open create.txt: no such file or directory
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/append
+    session_file_resolution_test.go:74: append: error=resolve relative path &quot;append.txt&quot;: terminal unavailable: read /tmp/TestSessionExecutorRelativeFilesRequireTerminalappend225658465/001/terminal.json: is a directory; launch-directory file=&quot;launch-directory sentinel&quot;; read error=&lt;nil&gt;
+=== RUN   TestSessionExecutorRelativeFilesRequireTerminal/edit
+    session_file_resolution_test.go:74: edit: error=resolve relative path &quot;edit.txt&quot;: terminal unavailable: read /tmp/TestSessionExecutorRelativeFilesRequireTerminaledit1289789199/001/terminal.json: is a directory; launch-directory file=&quot;launch-directory sentinel&quot;; read error=&lt;nil&gt;
+--- PASS: TestSessionExecutorRelativeFilesRequireTerminal (0.00s)
+    --- PASS: TestSessionExecutorRelativeFilesRequireTerminal/read (0.00s)
+    --- PASS: TestSessionExecutorRelativeFilesRequireTerminal/write (0.00s)
+    --- PASS: TestSessionExecutorRelativeFilesRequireTerminal/create (0.00s)
+    --- PASS: TestSessionExecutorRelativeFilesRequireTerminal/append (0.00s)
+    --- PASS: TestSessionExecutorRelativeFilesRequireTerminal/edit (0.00s)
+=== RUN   TestSessionExecutorAbsoluteFilesDoNotRequireTerminal
+--- PASS: TestSessionExecutorAbsoluteFilesDoNotRequireTerminal (0.00s)
+=== RUN   TestSessionExecutorRelativeFilesRecoverWithShellDirectory
+--- PASS: TestSessionExecutorRelativeFilesRecoverWithShellDirectory (0.04s)
+=== RUN   TestAgentRelativeFileErrorsWhenTerminalUnavailable
+    session_file_service_test.go:92: real PTY changed to a separate workspace; terminal then closed and restart snapshot made unreadable
+    session_file_service_test.go:97: production Server.Start succeeded with valid task history and an unavailable terminal
+    session_file_service_test.go:117: read_file: tool_done success=false
+    session_file_service_test.go:124: read_file: resolve relative path &quot;read.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:117: write_file: tool_done success=false
+    session_file_service_test.go:124: write_file: resolve relative path &quot;write.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:117: append_file: tool_done success=false
+    session_file_service_test.go:124: append_file: resolve relative path &quot;append.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:117: edit_file: tool_done success=false
+    session_file_service_test.go:124: edit_file: resolve relative path &quot;edit.txt&quot;: terminal unavailable: read /tmp/TestAgentRelativeFileErrorsWhenTerminalUnavailable1059484559/004/terminal.json: is a directory
+    session_file_service_test.go:137: read.txt after service run: &quot;launch-directory sentinel&quot;
+    session_file_service_test.go:137: write.txt after service run: &quot;launch-directory sentinel&quot;
+    session_file_service_test.go:137: append.txt after service run: &quot;launch-directory sentinel&quot;
+    session_file_service_test.go:137: edit.txt after service run: &quot;launch-directory sentinel&quot;
+--- PASS: TestAgentRelativeFileErrorsWhenTerminalUnavailable (0.05s)
+=== RUN   TestSessionExecutorRelativeFilesFollowShell
+--- PASS: TestSessionExecutorRelativeFilesFollowShell (0.04s)
+PASS
+ok  	github.com/deploypilot/deploypilot/internal/server	0.138s
+</pre></details>

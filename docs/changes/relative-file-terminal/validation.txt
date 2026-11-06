@@ -1,0 +1,184 @@
+=== go version ===
+go version go1.27.3 linux/amd64
+=== frontend dependency lock comparison ===
+6a8ad2ba1bbe9bc403545b57eefe34a83ff6eec85c7c3e987a283d64134fbd1c  web/package-lock.json
+6a8ad2ba1bbe9bc403545b57eefe34a83ff6eec85c7c3e987a283d64134fbd1c  /workspace/scratch/7192ccf062a7/deploypilot-patrol/web/package-lock.json
+=== frontend build ===
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> deploypilot-web@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.11 building for production...
+transforming...
+✓ 2059 modules transformed.
+rendering chunks...
+computing gzip size...
+../client/internal/webui/dist/index.html                                                   1.01 kB │ gzip:   0.46 kB
+../client/internal/webui/dist/assets/noto-sans-sc-88-wght-normal-BXYxwf2t.woff2            7.23 kB
+../client/internal/webui/dist/assets/noto-sans-sc-87-wght-normal-DioZSHnU.woff2            7.96 kB
+../client/internal/webui/dist/assets/noto-sans-sc-latin-ext-wght-normal-DuJTpTg_.woff2     8.13 kB
+../client/internal/webui/dist/assets/noto-sans-sc-91-wght-normal-DTr9RQcS.woff2            8.62 kB
+../client/internal/webui/dist/assets/noto-sans-sc-vietnamese-wght-normal-Bi3ATJ76.woff2    8.98 kB
+../client/internal/webui/dist/assets/noto-sans-sc-90-wght-normal-BnOlPreP.woff2            9.22 kB
+../client/internal/webui/dist/assets/noto-sans-sc-99-wght-normal-BI6XPoxp.woff2            9.70 kB
+../client/internal/webui/dist/assets/noto-sans-sc-cyrillic-wght-normal-BGmsQlw-.woff2      9.90 kB
+../client/internal/webui/dist/assets/noto-sans-sc-89-wght-normal-ClMFrFaL.woff2           10.79 kB
+../client/internal/webui/dist/assets/noto-sans-sc-21-wght-normal-D0x9-yBt.woff2           11.28 kB
+../client/internal/webui/dist/assets/noto-sans-sc-6-wght-normal-ChnZIQfQ.woff2            11.39 kB
+../client/internal/webui/dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff         13.14 kB
+../client/internal/webui/dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2        14.71 kB
+../client/internal/webui/dist/assets/noto-sans-sc-5-wght-normal-CfWugllB.woff2            20.04 kB
+../client/internal/webui/dist/assets/noto-sans-sc-latin-wght-normal-DDW8mKAR.woff2        24.88 kB
+../client/internal/webui/dist/assets/noto-sans-sc-85-wght-normal-CjI3qdxG.woff2           26.77 kB
+../client/internal/webui/dist/assets/noto-sans-sc-80-wght-normal-Bje1Fxy1.woff2           32.45 kB
+../client/internal/webui/dist/assets/noto-sans-sc-84-wght-normal-zMBmUocm.woff2           32.52 kB
+../client/internal/webui/dist/assets/noto-sans-sc-86-wght-normal-BHY8TVEH.woff2           33.43 kB
+../client/internal/webui/dist/assets/noto-sans-sc-41-wght-normal-Hthm7FFi.woff2           36.28 kB
+../client/internal/webui/dist/assets/noto-sans-sc-77-wght-normal-B3MVY9Ax.woff2           36.66 kB
+../client/internal/webui/dist/assets/noto-sans-sc-73-wght-normal-B1ZoOTgM.woff2           39.10 kB
+../client/internal/webui/dist/assets/noto-sans-sc-79-wght-normal-BIoZy8fr.woff2           41.06 kB
+../client/internal/webui/dist/assets/noto-sans-sc-60-wght-normal-B7QOYsXJ.woff2           41.30 kB
+../client/internal/webui/dist/assets/noto-sans-sc-68-wght-normal-DGbCD9xu.woff2           41.38 kB
+../client/internal/webui/dist/assets/noto-sans-sc-65-wght-normal-DMPCXBvK.woff2           41.39 kB
+../client/internal/webui/dist/assets/noto-sans-sc-64-wght-normal-DVB11t7j.woff2           41.41 kB
+../client/internal/webui/dist/assets/noto-sans-sc-51-wght-normal-BlFLOjcP.woff2           41.48 kB
+../client/internal/webui/dist/assets/noto-sans-sc-36-wght-normal-CkITyjoT.woff2           41.69 kB
+../client/internal/webui/dist/assets/noto-sans-sc-70-wght-normal-RgTO941D.woff2           42.08 kB
+../client/internal/webui/dist/assets/noto-sans-sc-53-wght-normal-CwyWNT6x.woff2           43.28 kB
+../client/internal/webui/dist/assets/noto-sans-sc-83-wght-normal-99rD8YO-.woff2           43.36 kB
+../client/internal/webui/dist/assets/noto-sans-sc-75-wght-normal-Cp2wp4si.woff2           43.82 kB
+../client/internal/webui/dist/assets/noto-sans-sc-61-wght-normal-C8JjQS7w.woff2           45.10 kB
+../client/internal/webui/dist/assets/noto-sans-sc-42-wght-normal-eaS2gKds.woff2           45.43 kB
+../client/internal/webui/dist/assets/noto-sans-sc-50-wght-normal-DAOGW-Dr.woff2           45.72 kB
+../client/internal/webui/dist/assets/noto-sans-sc-118-wght-normal-xhBB7f6V.woff2          45.99 kB
+../client/internal/webui/dist/assets/noto-sans-sc-82-wght-normal-CUggNZi4.woff2           46.01 kB
+../client/internal/webui/dist/assets/noto-sans-sc-40-wght-normal-BQ5xpS5j.woff2           46.43 kB
+../client/internal/webui/dist/assets/noto-sans-sc-43-wght-normal-o-T53XXV.woff2           46.49 kB
+../client/internal/webui/dist/assets/noto-sans-sc-34-wght-normal-Bspba0wC.woff2           46.75 kB
+../client/internal/webui/dist/assets/noto-sans-sc-72-wght-normal-C4oWy3ul.woff2           46.92 kB
+../client/internal/webui/dist/assets/noto-sans-sc-31-wght-normal-Wfi_lutW.woff2           47.08 kB
+../client/internal/webui/dist/assets/noto-sans-sc-27-wght-normal-COFdrquJ.woff2           47.32 kB
+../client/internal/webui/dist/assets/noto-sans-sc-33-wght-normal-CUVQXNAJ.woff2           47.33 kB
+../client/internal/webui/dist/assets/noto-sans-sc-59-wght-normal-BS4Kwzxx.woff2           47.50 kB
+../client/internal/webui/dist/assets/noto-sans-sc-81-wght-normal-B2NN7Qi3.woff2           47.50 kB
+../client/internal/webui/dist/assets/noto-sans-sc-71-wght-normal-D9sG-CWv.woff2           47.77 kB
+../client/internal/webui/dist/assets/noto-sans-sc-55-wght-normal-DBK2wUOR.woff2           47.95 kB
+../client/internal/webui/dist/assets/noto-sans-sc-76-wght-normal-B494D7xS.woff2           48.24 kB
+../client/internal/webui/dist/assets/noto-sans-sc-78-wght-normal-5jX7iNMC.woff2           48.92 kB
+../client/internal/webui/dist/assets/noto-sans-sc-63-wght-normal-BJr8P-OB.woff2           49.05 kB
+../client/internal/webui/dist/assets/noto-sans-sc-28-wght-normal-DMgdNu1o.woff2           50.02 kB
+../client/internal/webui/dist/assets/noto-sans-sc-35-wght-normal-K8fX_YPG.woff2           50.46 kB
+../client/internal/webui/dist/assets/noto-sans-sc-48-wght-normal-BNMfTR6k.woff2           50.62 kB
+../client/internal/webui/dist/assets/noto-sans-sc-26-wght-normal-C0sF2Z2f.woff2           50.74 kB
+../client/internal/webui/dist/assets/noto-sans-sc-39-wght-normal-BMZNLWQU.woff2           51.62 kB
+../client/internal/webui/dist/assets/noto-sans-sc-52-wght-normal-OZjrybnw.woff2           51.77 kB
+../client/internal/webui/dist/assets/noto-sans-sc-54-wght-normal-DM0nRe18.woff2           51.82 kB
+../client/internal/webui/dist/assets/noto-sans-sc-117-wght-normal-siZzFqgK.woff2          52.23 kB
+../client/internal/webui/dist/assets/noto-sans-sc-32-wght-normal-BRJQ4PY5.woff2           52.37 kB
+../client/internal/webui/dist/assets/noto-sans-sc-67-wght-normal-Dzk7WhCR.woff2           52.46 kB
+../client/internal/webui/dist/assets/noto-sans-sc-66-wght-normal-BobaG10V.woff2           52.62 kB
+../client/internal/webui/dist/assets/noto-sans-sc-49-wght-normal-DX-0y7wg.woff2           52.77 kB
+../client/internal/webui/dist/assets/noto-sans-sc-116-wght-normal-B4HVAfHo.woff2          52.80 kB
+../client/internal/webui/dist/assets/noto-sans-sc-56-wght-normal-C-VKK1LS.woff2           53.33 kB
+../client/internal/webui/dist/assets/noto-sans-sc-37-wght-normal-WCZ2zfEe.woff2           53.36 kB
+../client/internal/webui/dist/assets/noto-sans-sc-29-wght-normal-Cmq8em30.woff2           53.85 kB
+../client/internal/webui/dist/assets/noto-sans-sc-44-wght-normal-BJH5J4Ez.woff2           54.10 kB
+../client/internal/webui/dist/assets/noto-sans-sc-30-wght-normal-CZWqZ3yU.woff2           54.42 kB
+../client/internal/webui/dist/assets/noto-sans-sc-38-wght-normal-DeM7CUce.woff2           54.42 kB
+../client/internal/webui/dist/assets/noto-sans-sc-57-wght-normal-Cdbfh5kq.woff2           55.35 kB
+../client/internal/webui/dist/assets/noto-sans-sc-69-wght-normal-Ctrv1EqA.woff2           55.52 kB
+../client/internal/webui/dist/assets/noto-sans-sc-47-wght-normal-CyY7gKNX.woff2           55.97 kB
+../client/internal/webui/dist/assets/noto-sans-sc-74-wght-normal-F7dH_rZJ.woff2           56.26 kB
+../client/internal/webui/dist/assets/noto-sans-sc-115-wght-normal-BWy07H14.woff2          56.26 kB
+../client/internal/webui/dist/assets/noto-sans-sc-23-wght-normal-Du1oYWkE.woff2           56.70 kB
+../client/internal/webui/dist/assets/noto-sans-sc-112-wght-normal-BcFuP3w6.woff2          57.46 kB
+../client/internal/webui/dist/assets/noto-sans-sc-58-wght-normal-CflMKARZ.woff2           57.47 kB
+../client/internal/webui/dist/assets/noto-sans-sc-46-wght-normal-BR_5Mu6e.woff2           57.52 kB
+../client/internal/webui/dist/assets/noto-sans-sc-114-wght-normal-CO_5Xo-i.woff2          57.74 kB
+../client/internal/webui/dist/assets/noto-sans-sc-101-wght-normal-CPkZHnw0.woff2          58.03 kB
+../client/internal/webui/dist/assets/noto-sans-sc-25-wght-normal-BFHiqilg.woff2           58.22 kB
+../client/internal/webui/dist/assets/noto-sans-sc-113-wght-normal-Dk932kmj.woff2          58.43 kB
+../client/internal/webui/dist/assets/noto-sans-sc-62-wght-normal-bS4wq1Gg.woff2           58.96 kB
+../client/internal/webui/dist/assets/noto-sans-sc-109-wght-normal-Dsp-De_0.woff2          60.21 kB
+../client/internal/webui/dist/assets/noto-sans-sc-102-wght-normal-gzIulUH6.woff2          60.52 kB
+../client/internal/webui/dist/assets/noto-sans-sc-107-wght-normal-D7fvVprN.woff2          60.83 kB
+../client/internal/webui/dist/assets/noto-sans-sc-110-wght-normal-DE_6NUrb.woff2          61.19 kB
+../client/internal/webui/dist/assets/noto-sans-sc-104-wght-normal-B3QMglgE.woff2          61.40 kB
+../client/internal/webui/dist/assets/noto-sans-sc-105-wght-normal-xXh_OMfk.woff2          61.61 kB
+../client/internal/webui/dist/assets/noto-sans-sc-111-wght-normal-C4S-TlTn.woff2          62.40 kB
+../client/internal/webui/dist/assets/noto-sans-sc-106-wght-normal-B9n3jMjP.woff2          62.44 kB
+../client/internal/webui/dist/assets/noto-sans-sc-24-wght-normal-CmWjJ0gt.woff2           62.55 kB
+../client/internal/webui/dist/assets/noto-sans-sc-103-wght-normal-CJfSBxFo.woff2          63.73 kB
+../client/internal/webui/dist/assets/noto-sans-sc-108-wght-normal-J0_LhxVo.woff2          64.34 kB
+../client/internal/webui/dist/assets/noto-sans-sc-100-wght-normal-DluiXYzi.woff2          64.38 kB
+../client/internal/webui/dist/assets/noto-sans-sc-22-wght-normal-BBUVTShg.woff2           65.22 kB
+../client/internal/webui/dist/assets/noto-sans-sc-45-wght-normal-BKuxSCOJ.woff2           67.44 kB
+../client/internal/webui/dist/assets/noto-sans-sc-119-wght-normal-Ck_g2FGz.woff2          76.32 kB
+../client/internal/webui/dist/assets/index-CpxT0O6-.css                                  145.12 kB │ gzip:  54.06 kB
+../client/internal/webui/dist/assets/index-CRJLRR-7.js                                   487.49 kB │ gzip: 136.07 kB
+✓ built in 2.31s
+=== frontend unit tests ===
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> deploypilot-web@0.1.0 test
+> node --test tests/agent-state.test.ts tests/ui-style.test.ts tests/terminal-agent.test.ts tests/hardening.test.ts tests/auth-recovery.test.ts
+
+✔ theme defaults to night and preserves saved day/night/comfort (1.26091ms)
+✔ desktop split ratio stays inside usable task and terminal widths (0.213677ms)
+✔ a recoverable tool error does not finish a running task (0.193247ms)
+✔ a final summary does not release the task before cleanup acknowledgement (0.165556ms)
+✔ server acknowledgements update running and stopping states (0.151946ms)
+✔ streamed output retains its recent tail with an explicit truncation marker (1.683737ms)
+✔ event count and a single oversized message are bounded (1.885987ms)
+✔ merging output preserves boundaries around tool events (0.165405ms)
+✔ real activity and execution evidence remain distinct and grouped by call id (0.562604ms)
+✔ public assistant content remains a short progress message (0.272064ms)
+✔ tool error after completion remains attached to its call and overrides success (0.32384ms)
+✔ post-pair API 401 notifies the app and a disconnect probe reports expiry (4.77354ms)
+✔ disconnect probe keeps retrying when session status is unknown (0.458991ms)
+✔ concurrent disconnect checks share one session request (1.475007ms)
+✔ revisiting a used pairing link accepts an already valid session first (0.603485ms)
+✔ an invalid one-time token falls back to checking an existing session (0.934556ms)
+✔ isFailedFinal flags only an explicit failed final event (1.167431ms)
+✔ session-expired code matches the server's application close code (0.150513ms)
+✔ session-expired handler fires until cleared (0.180447ms)
+✔ a follow-up in the same session renders as its own operator row (1.164356ms)
+✔ stored streaming fragments render as one reply, not one line each (0.430779ms)
+✔ replies separated by a tool call stay separate (0.229861ms)
+✔ terminal shows actual commands, streamed output and zero exit code (1.250865ms)
+✔ terminal displays file operations and errors without executing metadata control codes (0.309198ms)
+✔ interface copy has no middle-dot separators or promotional captions (1.431934ms)
+✔ application icons use SVG instead of emoji or character pictograms (0.965332ms)
+✔ authored colors come from Radix rather than local color literals (0.539961ms)
+✔ typography uses readable 14, 24 and 48 pixel sizes (0.731845ms)
+✔ visible borders use the half-pixel token (0.490277ms)
+✔ styles have no gradients, shadows, animations or transitions (0.385191ms)
+✔ brand icons use Lucide and the desktop terminal precedes tasks (0.325323ms)
+✔ day, night, and comfort palettes are Radix-backed and theme selectors are present (0.228268ms)
+✔ desktop resizing and machine details are real controls, not decoration (0.336619ms)
+ℹ tests 33
+ℹ suites 0
+ℹ pass 33
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 159.587768
+=== go vet ./... ===
+=== go test ./... -count=1 ===
+ok  	github.com/deploypilot/deploypilot/cmd/deploypilot	0.006s
+ok  	github.com/deploypilot/deploypilot/internal/agent	8.098s
+ok  	github.com/deploypilot/deploypilot/internal/auth	0.256s
+ok  	github.com/deploypilot/deploypilot/internal/banner	0.003s
+ok  	github.com/deploypilot/deploypilot/internal/console	0.004s
+ok  	github.com/deploypilot/deploypilot/internal/llm	1.550s
+ok  	github.com/deploypilot/deploypilot/internal/pty	0.004s
+ok  	github.com/deploypilot/deploypilot/internal/server	5.572s
+ok  	github.com/deploypilot/deploypilot/internal/tunnel	1.522s
+?   	github.com/deploypilot/deploypilot/internal/webui	[no test files]
+=== targeted race repetitions ===
+ok  	github.com/deploypilot/deploypilot/internal/server	1.568s
+=== Windows amd64 cross-build ===
+error obtaining VCS status: exit status 128
+	Use -buildvcs=false to disable VCS stamping.

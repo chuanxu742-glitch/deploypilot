@@ -1,0 +1,5 @@
+=== Cross-build retry: isolated git archive has no .git; disable VCS stamping ===
+=== Windows amd64: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false ./... ===
+Windows amd64 cross-build PASS
+=== Linux arm64: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false ./... ===
+Linux arm64 cross-build PASS
