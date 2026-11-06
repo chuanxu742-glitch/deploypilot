@@ -33,5 +33,6 @@ Go 1.27.3。相同测试在原版有6个失败子用例，修复后3个顶层测
 
 - [修复前输出摘要](before.txt)、[修复后输出摘要](after.txt)：从真实完整测试日志提取请求/响应字段。
 - [原始失败日志](baseline.log)、[修复日志](fixed.log)、[race原始JSONL](race.jsonl)、[vet结果](vet.txt)。
+- 实际GitHub日志页截图：[修复前](before-github.jpg)、[修复后](after-github.jpg)。拍摄于提交 `3627d059900f06390876c9aadc419f71dd0bcbc1`，均为未经编辑的原生1197×807 JPEG，完整显示11行日志；不是产品UI或真实网络抓包。
 
 仅修复显式gzip质量值处理，不声称实现全部内容协商策略。没有跑全Go库、Live/MachineInfo、应用启动、浏览器E2E或实际渲染。日志截图仅证明真实GitHub日志页面，不是产品UI验收。
