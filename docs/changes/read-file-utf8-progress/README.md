@@ -29,6 +29,10 @@ cp client/internal/agent/read_file_progress_test.go "$baseline/client/internal/a
 
 原始完整输出：[before.txt](before.txt)。该输出为真实测试结果，未使用替身文件读取器。
 
+截图是浏览器中显示的上述原始测试日志，不是部署现场或应用界面。长行可能超出截图右侧，完整内容见文本文件。
+
+![原版回归失败日志](before.jpg)
+
 ## 验证修复
 
 ```sh
@@ -43,5 +47,7 @@ go test ./internal/agent -run TestReadFile -race -count=5
 - 前端构建和 33 项单元测试通过。全包 Go 检查需要先 `npm --prefix web ci && npm --prefix web run build` 生成嵌入资源；第一次未构建资源的检查因此未通过，完成构建后重新运行通过。
 - Windows amd64、Linux arm64 的 `go build ./...` 交叉构建通过；未在 Windows 或 arm64 实机运行。
 - 汇总命令输出：[verification.txt](verification.txt)。未运行 Docker E2E、现场部署或付费模型联调。
+
+![修复后回归通过日志](after.jpg)
 
 提交前再次获取 main，仍为上述基线。与 #5 修改同一文件的不同部分，后续整合应重跑 `TestReadFile`。不合并、不部署、不自动关闭已有事项。
