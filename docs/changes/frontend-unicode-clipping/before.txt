@@ -1,0 +1,9 @@
+Actual frontend mergeEvent/normalizeEvents; base main 9d5114c.
+Valid Unicode chunks=true; largest chunk=32755 bytes
+Combined input=32769 UTF-16 units; limit=32768
+output/live: wellFormed=false; units=32768; firstTailUnit=0xde80
+output/restored: wellFormed=false; units=32768; firstTailUnit=0xde80
+thinking/live: wellFormed=false; units=32768; firstTailUnit=0xde80
+thinking/restored: wellFormed=false; units=32768; firstTailUnit=0xde80
+Expected: wellFormed=true; whole-character tail; units <= 32768.
+Production TypeScript functions; no browser UI, backend or model run.

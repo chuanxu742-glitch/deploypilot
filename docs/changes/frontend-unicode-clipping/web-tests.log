@@ -1,0 +1,53 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> deploypilot-web@0.1.0 test
+> node --test tests/agent-state.test.ts tests/ui-style.test.ts tests/terminal-agent.test.ts tests/hardening.test.ts tests/auth-recovery.test.ts
+
+✔ theme defaults to night and preserves saved day/night/comfort (1.460686ms)
+✔ desktop split ratio stays inside usable task and terminal widths (0.165094ms)
+✔ a recoverable tool error does not finish a running task (0.179065ms)
+✔ a final summary does not release the task before cleanup acknowledgement (0.14832ms)
+✔ server acknowledgements update running and stopping states (0.196993ms)
+✔ streamed output retains its recent tail with an explicit truncation marker (1.705439ms)
+✔ event count and a single oversized message are bounded (2.543762ms)
+✔ merging output preserves boundaries around tool events (0.154039ms)
+✔ real activity and execution evidence remain distinct and grouped by call id (0.456427ms)
+✔ public assistant content remains a short progress message (0.372342ms)
+✔ tool error after completion remains attached to its call and overrides success (0.263451ms)
+✔ oversized output does not retain half a Unicode character (0.299354ms)
+✔ oversized thinking does not retain half a Unicode character (0.220316ms)
+✔ oversized final does not retain half a Unicode character (0.197462ms)
+✔ streamed and restored output preserve Unicode at clipping boundaries (2.831588ms)
+✔ streamed and restored thinking preserve Unicode at clipping boundaries (1.558271ms)
+✔ exact-limit Unicode messages are unchanged (0.203702ms)
+✔ ASCII, BMP and complete-pair clipped tails retain their full budget (0.265814ms)
+✔ post-pair API 401 notifies the app and a disconnect probe reports expiry (4.503158ms)
+✔ disconnect probe keeps retrying when session status is unknown (0.297041ms)
+✔ concurrent disconnect checks share one session request (0.936008ms)
+✔ revisiting a used pairing link accepts an already valid session first (0.560551ms)
+✔ an invalid one-time token falls back to checking an existing session (1.970953ms)
+✔ isFailedFinal flags only an explicit failed final event (0.964831ms)
+✔ session-expired code matches the server's application close code (0.132366ms)
+✔ session-expired handler fires until cleared (0.192976ms)
+✔ a follow-up in the same session renders as its own operator row (1.037749ms)
+✔ stored streaming fragments render as one reply, not one line each (0.329248ms)
+✔ replies separated by a tool call stay separate (0.172746ms)
+✔ terminal shows actual commands, streamed output and zero exit code (1.256373ms)
+✔ terminal displays file operations and errors without executing metadata control codes (0.394144ms)
+✔ interface copy has no middle-dot separators or promotional captions (0.935448ms)
+✔ application icons use SVG instead of emoji or character pictograms (0.665046ms)
+✔ authored colors come from Radix rather than local color literals (0.461133ms)
+✔ typography uses readable 14, 24 and 48 pixel sizes (0.581052ms)
+✔ visible borders use the half-pixel token (0.391591ms)
+✔ styles have no gradients, shadows, animations or transitions (0.396307ms)
+✔ brand icons use Lucide and the desktop terminal precedes tasks (0.318082ms)
+✔ day, night, and comfort palettes are Radix-backed and theme selectors are present (0.178074ms)
+✔ desktop resizing and machine details are real controls, not decoration (0.334986ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 174.728434
